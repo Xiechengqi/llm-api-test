@@ -1,6 +1,7 @@
 "use client"
 
 import { CardDescription } from "@/components/ui/card"
+import { Copy } from "lucide-react" // Import Copy icon
 
 import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
@@ -263,7 +264,17 @@ export default function LLMAPITester() {
         parsedResponse = responseText
       }
 
-      setResponseData(responseText)
+      const formattedResponse = JSON.stringify(
+        {
+          status: response.status,
+          statusText: response.statusText,
+          headers: Object.fromEntries(response.headers.entries()),
+          body: parsedResponse,
+        },
+        null,
+        2,
+      )
+      setResponseData(formattedResponse)
 
       const requestContent = requestBody.messages?.[requestBody.messages.length - 1]?.content || prompt
       const responseContent = parsedResponse?.choices?.[0]?.message?.content || JSON.stringify(parsedResponse)
@@ -275,15 +286,7 @@ export default function LLMAPITester() {
         requestContent,
         requestRaw: requestCurl,
         responseContent,
-        responseRaw: JSON.stringify(
-          {
-            status: response.status,
-            headers: Object.fromEntries(response.headers.entries()),
-            body: parsedResponse,
-          },
-          null,
-          2,
-        ),
+        responseRaw: formattedResponse,
       }
 
       setHistory((prev) => {
@@ -431,6 +434,42 @@ export default function LLMAPITester() {
 
   const totalPages = Math.ceil(history.length / pageSize)
   const paginatedHistory = history.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+
+  const [requestCopyText, setRequestCopyText] = useState("复制")
+  const [responseCopyText, setResponseCopyText] = useState("复制")
+
+  const handleCopy = async (text: string, type: "request" | "response") => {
+    const setText = type === "request" ? setRequestCopyText : setResponseCopyText
+
+    try {
+      // Try modern Clipboard API first
+      await navigator.clipboard.writeText(text)
+      setText("已复制!")
+      setTimeout(() => setText("复制"), 2000)
+    } catch (err) {
+      // Fallback to traditional method
+      const textArea = document.createElement("textarea")
+      textArea.value = text
+      textArea.style.position = "fixed"
+      textArea.style.left = "-999999px"
+      document.body.appendChild(textArea)
+      textArea.select()
+
+      try {
+        document.execCommand("copy")
+        setText("已复制!")
+        setTimeout(() => setText("复制"), 2000)
+      } catch (execErr) {
+        toast({
+          title: "复制失败",
+          description: "无法访问剪贴板，请手动复制",
+          variant: "destructive",
+        })
+      }
+
+      document.body.removeChild(textArea)
+    }
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -895,9 +934,22 @@ export default function LLMAPITester() {
           {/* Request and Response Details - Side by side */}
           <div className="grid grid-cols-2 gap-6">
             <Card className="flex flex-col h-[600px]">
-              <CardHeader>
-                <CardTitle>请求详情</CardTitle>
-                <CardDescription>完整的 cURL 命令（包含明文 API Key）</CardDescription>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle>请求详情</CardTitle>
+                    <CardDescription>完整的 cURL 命令（包含明文 API Key）</CardDescription>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => requestData && handleCopy(requestData, "request")}
+                    disabled={!requestData}
+                  >
+                    <Copy className="h-4 w-4 mr-1" />
+                    {requestCopyText}
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent className="flex-1 overflow-hidden">
                 <div className="h-full overflow-auto rounded-lg bg-muted p-4">
@@ -909,25 +961,39 @@ export default function LLMAPITester() {
             </Card>
 
             <Card className="flex flex-col h-[600px]">
-              <CardHeader>
-                <CardTitle>响应详情</CardTitle>
-                <CardDescription>完整的 HTTP 响应内容</CardDescription>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle>响应详情</CardTitle>
+                    <CardDescription>API 返回的完整响应</CardDescription>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      if (responseData) {
+                        const cleanedResponse = responseData
+                          .split("\n")
+                          .filter((line) => line.trim() !== "")
+                          .join("\n")
+                        handleCopy(cleanedResponse, "response")
+                      }
+                    }}
+                    disabled={!responseData}
+                  >
+                    <Copy className="h-4 w-4 mr-1" />
+                    {responseCopyText}
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent className="flex-1 overflow-hidden">
                 <div className="h-full overflow-auto rounded-lg bg-muted p-4">
                   <pre className="text-xs font-mono leading-relaxed whitespace-pre-wrap break-words">
                     {responseData
-                      ? (() => {
-                          try {
-                            const parsed = JSON.parse(responseData)
-                            return JSON.stringify(parsed, null, 2)
-                          } catch {
-                            return responseData
-                              .split("\n")
-                              .filter((line) => line.trim() !== "")
-                              .join("\n")
-                          }
-                        })()
+                      ? responseData
+                          .split("\n")
+                          .filter((line) => line.trim() !== "")
+                          .join("\n")
                       : "等待响应..."}
                   </pre>
                 </div>
