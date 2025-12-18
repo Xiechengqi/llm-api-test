@@ -92,7 +92,6 @@ export default function LLMAPITester() {
   const DEFAULT_VALUES = {
     provider: "openrouter" as const,
     model: "",
-    apiKey: "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",
     baseURL: "https://openrouter.ai",
     apiPath: "/api/v1/chat/completions",
     systemPrompt: "You are a helpful assistant.",
