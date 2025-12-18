@@ -1,9 +1,23 @@
 "use client"
 
 import { CardDescription } from "@/components/ui/card"
-import { Copy } from "lucide-react" // Import Copy icon
+import {
+  Copy,
+  Pencil,
+  List,
+  Eye,
+  EyeOff,
+  RotateCcw,
+  Trash2,
+  ChevronLeft,
+  ChevronRight,
+  ChevronDown,
+  ChevronUp,
+  Play,
+  StopCircle,
+} from "lucide-react" // Import Copy, Pencil, List, Eye, EyeOff, RotateCcw, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Calendar, Check, Clock, X, Play, StopCircle icons
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react" // Import useRef
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -11,9 +25,9 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Slider } from "@/components/ui/slider"
-import { RotateCcw, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { Toaster } from "@/components/ui/toaster"
+import { TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table" // Import Table components
 
 const API_PROVIDERS = [
   {
@@ -56,6 +70,7 @@ const API_PROVIDERS = [
 interface HistoryItem {
   id: string
   timestamp: number
+  duration?: number // Response time in milliseconds
   model: string // Add model field to HistoryItem interface
   requestContent: string
   requestRaw: string
@@ -63,24 +78,35 @@ interface HistoryItem {
   responseRaw: string
 }
 
+interface OpenRouterModel {
+  id: string
+  name?: string
+  context?: string
+}
+
 export default function LLMAPITester() {
   const DEFAULT_VALUES = {
-    provider: "openrouter",
-    endpoint: "https://openrouter.ai/api/v1/chat/completions",
+    provider: "openai",
+    endpoint: "https://api.openai.com/v1/chat/completions",
     model: "gpt-3.5-turbo",
     prompt: "Hello, how are you?",
-    maxTokens: 4096,
-    temperature: 1.0,
-    topP: 1.0,
+    maxTokens: 1024,
+    temperature: 0.7,
+    topP: 1,
     frequencyPenalty: 0,
     presencePenalty: 0,
+    timerEnabled: false,
+    timerInterval: 60, // Add timerInterval to default values
   }
 
   const [provider, setProvider] = useState(DEFAULT_VALUES.provider)
   const [endpoint, setEndpoint] = useState(DEFAULT_VALUES.endpoint)
   const [apiKey, setApiKey] = useState("")
+  const [showApiKey, setShowApiKey] = useState(false)
   const [model, setModel] = useState("")
-  const [prompt, setPrompt] = useState(DEFAULT_VALUES.prompt)
+  const [openrouterModels, setOpenrouterModels] = useState<OpenRouterModel[]>([])
+  const [isLoadingModels, setIsLoadingModels] = useState(false)
+  const [isCustomModel, setIsCustomModel] = useState(false)
   const [maxTokens, setMaxTokens] = useState(DEFAULT_VALUES.maxTokens)
   const [temperature, setTemperature] = useState(DEFAULT_VALUES.temperature)
   const [topP, setTopP] = useState(DEFAULT_VALUES.topP)
@@ -91,6 +117,7 @@ export default function LLMAPITester() {
   const [responseData, setResponseData] = useState("")
   const [error, setError] = useState("")
   const [maxTokensLimit, setMaxTokensLimit] = useState(8192)
+  const [prompt, setPrompt] = useState(DEFAULT_VALUES.prompt) // Declare setPrompt variable
 
   const [history, setHistory] = useState<HistoryItem[]>([])
   const [pageSize, setPageSize] = useState(10)
@@ -98,7 +125,16 @@ export default function LLMAPITester() {
   const [expandedCells, setExpandedCells] = useState<Set<string>>(new Set())
   const [visibleRawCells, setVisibleRawCells] = useState<Set<string>>(new Set()) // State to track visible raw columns per history item
 
+  const [timerEnabled, setTimerEnabled] = useState(DEFAULT_VALUES.timerEnabled)
+  const [timerInterval, setTimerInterval] = useState(DEFAULT_VALUES.timerInterval)
+  const timerRef = useRef<NodeJS.Timeout | null>(null) // Use useRef for timer
+  const [isTimerRunning, setIsTimerRunning] = useState(false) // Track if timer is active
+  const [responseDuration, setResponseDuration] = useState<number | null>(null)
+
   const { toast } = useToast()
+
+  // Use a unified base URL for API calls
+  const baseUrl = endpoint || DEFAULT_VALUES.endpoint
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -113,6 +149,9 @@ export default function LLMAPITester() {
       const savedFrequencyPenalty = localStorage.getItem("llm_api_frequencyPenalty")
       const savedPresencePenalty = localStorage.getItem("llm_api_presencePenalty")
       const savedHistory = localStorage.getItem("llm_api_history")
+      // Load timer settings from localStorage
+      const savedTimerEnabled = localStorage.getItem("llm_api_timerEnabled")
+      const savedTimerInterval = localStorage.getItem("llm_api_timerInterval")
 
       if (savedProvider) setProvider(savedProvider)
       if (savedEndpoint) setEndpoint(savedEndpoint)
@@ -125,6 +164,9 @@ export default function LLMAPITester() {
       if (savedFrequencyPenalty) setFrequencyPenalty(Number(savedFrequencyPenalty))
       if (savedPresencePenalty) setPresencePenalty(Number(savedPresencePenalty))
       if (savedHistory) setHistory(JSON.parse(savedHistory))
+      // Set timer states from localStorage if available
+      if (savedTimerEnabled) setTimerEnabled(savedTimerEnabled === "true")
+      if (savedTimerInterval) setTimerInterval(Number(savedTimerInterval))
     }
   }, [])
 
@@ -194,6 +236,27 @@ export default function LLMAPITester() {
     }
   }, [history])
 
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("llm_api_timerEnabled", String(timerEnabled))
+    }
+  }, [timerEnabled])
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("llm_api_timerInterval", String(timerInterval))
+    }
+  }, [timerInterval])
+
+  useEffect(() => {
+    // Cleanup interval on component unmount
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current)
+      }
+    }
+  }, [])
+
   const handleProviderChange = (providerId: string) => {
     setProvider(providerId)
     const selectedProvider = API_PROVIDERS.find((p) => p.id === providerId)
@@ -202,7 +265,37 @@ export default function LLMAPITester() {
     } else {
       setEndpoint("")
     }
+
+    if (providerId === "openrouter") {
+      fetchOpenRouterModels()
+    }
   }
+
+  const fetchOpenRouterModels = async () => {
+    setIsLoadingModels(true)
+    try {
+      const response = await fetch("https://openrouter-free-api.xiechengqi.top/data/openrouter-free-text-to-text.json")
+      if (response.ok) {
+        const data = await response.json()
+        // Assuming the API returns an array of model objects with an 'id' field
+        setOpenrouterModels(Array.isArray(data) ? data : [])
+      } else {
+        console.error("[v0] Failed to fetch OpenRouter models:", response.statusText)
+        setOpenrouterModels([])
+      }
+    } catch (error) {
+      console.error("[v0] Error fetching OpenRouter models:", error)
+      setOpenrouterModels([])
+    } finally {
+      setIsLoadingModels(false)
+    }
+  }
+
+  useEffect(() => {
+    if (provider === "openrouter") {
+      fetchOpenRouterModels()
+    }
+  }, [provider])
 
   const handleTest = async () => {
     if (!apiKey) {
@@ -218,6 +311,7 @@ export default function LLMAPITester() {
     setLoading(true)
     setError("")
     setResponseData("")
+    setResponseDuration(null) // Reset duration on new test
 
     const modelToUse = model || DEFAULT_VALUES.model
 
@@ -244,6 +338,8 @@ export default function LLMAPITester() {
     }, 60000) // 60 second timeout
 
     try {
+      const startTime = performance.now() // Track start time
+
       const response = await fetch(endpoint, {
         method: "POST",
         headers: {
@@ -255,6 +351,10 @@ export default function LLMAPITester() {
       })
 
       clearTimeout(timeoutId)
+
+      const endTime = performance.now() // Track end time
+      const duration = Math.round(endTime - startTime) // Calculate duration
+      setResponseDuration(duration) // Set response duration state
 
       const responseText = await response.text()
       let parsedResponse
@@ -287,6 +387,7 @@ export default function LLMAPITester() {
         requestRaw: requestCurl,
         responseContent,
         responseRaw: formattedResponse,
+        duration: duration, // Store response time
       }
 
       setHistory((prev) => {
@@ -335,6 +436,7 @@ export default function LLMAPITester() {
 
       const errorResponse = JSON.stringify({ error: errorMessage }, null, 2)
       setResponseData(errorResponse)
+      setResponseDuration(null) // Reset duration on error
 
       const newHistoryItem: HistoryItem = {
         id: Date.now().toString(),
@@ -344,6 +446,7 @@ export default function LLMAPITester() {
         requestRaw: "",
         responseContent: "",
         responseRaw: errorResponse,
+        duration: null, // Duration is not applicable on error
       }
       setHistory((prev) => {
         const updated = [newHistoryItem, ...prev]
@@ -357,12 +460,47 @@ export default function LLMAPITester() {
     }
   }
 
+  const startTimer = () => {
+    // Clear any existing timer
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+    }
+
+    setIsTimerRunning(true)
+
+    // Execute handleTest immediately for the first time
+    handleTest()
+
+    // Set up the interval for subsequent calls
+    timerRef.current = setInterval(() => {
+      handleTest()
+    }, timerInterval * 1000) // Convert seconds to milliseconds
+  }
+
+  const stopTimer = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+    setIsTimerRunning(false)
+  }
+
+  // Combine test and timer start logic
+  const handleStartTest = () => {
+    if (timerEnabled) {
+      startTimer()
+    } else {
+      handleTest()
+    }
+  }
+
   const handleResetApiConfig = () => {
     setProvider(DEFAULT_VALUES.provider)
     setEndpoint(DEFAULT_VALUES.endpoint)
     setApiKey("")
     setModel("")
     setError("")
+    setShowApiKey(false) // Reset API Key visibility
 
     if (typeof window !== "undefined") {
       localStorage.removeItem("llm_api_provider")
@@ -379,6 +517,10 @@ export default function LLMAPITester() {
     setTopP(DEFAULT_VALUES.topP)
     setFrequencyPenalty(DEFAULT_VALUES.frequencyPenalty)
     setPresencePenalty(DEFAULT_VALUES.presencePenalty)
+    // Reset timer settings and stop timer if running
+    setTimerEnabled(DEFAULT_VALUES.timerEnabled)
+    setTimerInterval(DEFAULT_VALUES.timerInterval)
+    stopTimer() // Ensure timer is stopped on reset
 
     if (typeof window !== "undefined") {
       localStorage.removeItem("llm_api_prompt")
@@ -387,6 +529,8 @@ export default function LLMAPITester() {
       localStorage.removeItem("llm_api_topP")
       localStorage.removeItem("llm_api_frequencyPenalty")
       localStorage.removeItem("llm_api_presencePenalty")
+      localStorage.removeItem("llm_api_timerEnabled")
+      localStorage.removeItem("llm_api_timerInterval")
     }
   }
 
@@ -494,20 +638,72 @@ export default function LLMAPITester() {
               </SelectContent>
             </Select>
 
-            <Input
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder="eg: gpt-3.5-turbo"
-              className="w-[200px]"
-            />
+            {provider === "openrouter" ? (
+              <div className="flex items-center gap-2">
+                {!isCustomModel ? (
+                  <>
+                    <Select value={model} onValueChange={setModel} disabled={isLoadingModels}>
+                      <SelectTrigger className="w-[200px]">
+                        <SelectValue placeholder={isLoadingModels ? "加载中..." : "选择模型"}>
+                          {model || (isLoadingModels ? "加载中..." : "选择模型")}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {openrouterModels.map((m) => (
+                          <SelectItem key={m.id} value={m.id}>
+                            <div className="flex flex-col gap-0.5">
+                              <span className="font-medium">{m.name || m.id}</span>
+                              {m.context && <span className="text-xs text-muted-foreground">{m.context}</span>}
+                            </div>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button variant="ghost" size="sm" onClick={() => setIsCustomModel(true)} title="自定义模型">
+                      <Pencil className="size-4" />
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Input
+                      value={model}
+                      onChange={(e) => setModel(e.target.value)}
+                      placeholder="输入自定义模型 ID"
+                      className="w-[200px]"
+                    />
+                    <Button variant="ghost" size="sm" onClick={() => setIsCustomModel(false)} title="返回下拉选择">
+                      <List className="size-4" />
+                    </Button>
+                  </>
+                )}
+              </div>
+            ) : (
+              <Input
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder="eg: gpt-3.5-turbo"
+                className="w-[200px]"
+              />
+            )}
 
-            <Input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="API Key"
-              className="w-[200px]"
-            />
+            <div className="relative flex items-center">
+              <Input
+                type={showApiKey ? "text" : "password"}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="API Key"
+                className="w-[200px] pr-10"
+              />
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowApiKey(!showApiKey)}
+                className="absolute right-0 h-full px-3 hover:bg-transparent"
+                title={showApiKey ? "隐藏 API Key" : "显示 API Key"}
+              >
+                {showApiKey ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+              </Button>
+            </div>
 
             <Button variant="outline" size="sm" onClick={handleResetApiConfig}>
               <RotateCcw className="size-4" />
@@ -534,7 +730,7 @@ export default function LLMAPITester() {
       </nav>
 
       <div className="p-4 md:p-8">
-        <div className="mx-auto max-w-7xl space-y-6">
+        <div className="max-w-7xl mx-auto space-y-6">
           {/* Parameters Configuration - Full width */}
           <Card>
             <CardHeader>
@@ -548,16 +744,26 @@ export default function LLMAPITester() {
                     <RotateCcw className="mr-2 size-4" />
                     重置
                   </Button>
-                  <Button onClick={handleTest} disabled={loading} size="sm">
-                    {loading ? (
-                      <>
-                        <RotateCcw className="mr-2 size-4 animate-spin" />
-                        测试中...
-                      </>
-                    ) : (
-                      "开始测试"
-                    )}
-                  </Button>
+                  {isTimerRunning ? (
+                    <Button onClick={stopTimer} variant="destructive" size="sm">
+                      <StopCircle className="mr-2 size-4" />
+                      停止定时
+                    </Button>
+                  ) : (
+                    <Button onClick={handleStartTest} disabled={loading} size="sm">
+                      {loading ? (
+                        <>
+                          <RotateCcw className="mr-2 size-4 animate-spin" />
+                          测试中...
+                        </>
+                      ) : (
+                        <>
+                          <Play className="mr-2 size-4" />
+                          开始测试
+                        </>
+                      )}
+                    </Button>
+                  )}
                 </div>
               </div>
             </CardHeader>
@@ -578,9 +784,57 @@ export default function LLMAPITester() {
                 />
               </div>
 
+              <div className="space-y-4 pt-4">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label>定时配置</Label>
+                    <p className="text-xs text-muted-foreground">设置自动定时执行测试</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-6">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="timerEnabled"
+                      checked={timerEnabled}
+                      onChange={(e) => {
+                        setTimerEnabled(e.target.checked)
+                        if (!e.target.checked && isTimerRunning) {
+                          stopTimer()
+                        }
+                      }}
+                      className="h-4 w-4 rounded border-input bg-background accent-primary cursor-pointer"
+                    />
+                    <Label htmlFor="timerEnabled" className="cursor-pointer font-normal">
+                      启用定时执行
+                    </Label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Label htmlFor="timerInterval" className="text-sm text-muted-foreground whitespace-nowrap">
+                      间隔时间
+                    </Label>
+                    <Input
+                      id="timerInterval"
+                      type="number"
+                      value={timerInterval}
+                      onChange={(e) => setTimerInterval(Math.max(1, Number(e.target.value)))}
+                      className="w-20 h-8"
+                      min={1}
+                      disabled={!timerEnabled} // Disable input if timer is not enabled
+                    />
+                    <span className="text-sm text-muted-foreground">秒</span>
+                  </div>
+                  {isTimerRunning && (
+                    <span className="text-xs text-muted-foreground bg-primary/10 px-2 py-1 rounded">
+                      定时运行中 (每 {timerInterval} 秒)
+                    </span>
+                  )}
+                </div>
+              </div>
+
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <div className="flex-1 space-y-0.5">
+                  <div className="space-y-0.5">
                     <Label htmlFor="maxTokens">Max Tokens</Label>
                     <p className="text-xs text-muted-foreground">最大生成令牌数量（范围: 1 - {maxTokensLimit}）</p>
                   </div>
@@ -717,18 +971,19 @@ export default function LLMAPITester() {
                   <div className="border rounded-lg overflow-hidden">
                     <div className="overflow-x-auto">
                       <table className="w-full text-sm">
-                        <thead className="bg-muted">
-                          <tr>
-                            <th className="px-4 py-3 text-left font-medium w-[140px]">时间</th>
-                            <th className="px-4 py-3 text-left font-medium w-[160px]">模型</th>
-                            <th className="px-4 py-3 text-left font-medium">请求 Content</th>
-                            <th className="px-4 py-3 text-left font-medium w-[100px]">请求 Raw</th>
-                            <th className="px-4 py-3 text-left font-medium">响应 Content</th>
-                            <th className="px-4 py-3 text-left font-medium w-[100px]">响应 Raw</th>
-                            <th className="px-4 py-3 text-center font-medium w-[80px]">操作</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y">
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="w-[140px]">时间</TableHead>
+                            <TableHead className="w-[160px]">模型</TableHead>
+                            <TableHead className="w-[100px]">用时</TableHead>
+                            <TableHead>请求 Content</TableHead>
+                            <TableHead className="w-[100px]">请求 Raw</TableHead>
+                            <TableHead>响应 Content</TableHead>
+                            <TableHead className="w-[100px]">响应 Raw</TableHead>
+                            <TableHead className="px-4 py-3 text-center font-medium w-[80px]">操作</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody className="divide-y">
                           {paginatedHistory.map((item) => {
                             const requestContentId = `${item.id}-req-content`
                             const requestRawId = `${item.id}-req-raw`
@@ -736,8 +991,8 @@ export default function LLMAPITester() {
                             const responseRawId = `${item.id}-res-raw`
 
                             return (
-                              <tr key={item.id} className="hover:bg-muted/50">
-                                <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap align-top">
+                              <TableRow key={item.id} className="hover:bg-muted/50">
+                                <TableCell className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap align-top">
                                   {new Date(item.timestamp).toLocaleString("zh-CN", {
                                     month: "2-digit",
                                     day: "2-digit",
@@ -745,11 +1000,18 @@ export default function LLMAPITester() {
                                     minute: "2-digit",
                                     second: "2-digit",
                                   })}
-                                </td>
-                                <td className="px-4 py-3 text-xs align-top">
+                                </TableCell>
+                                <TableCell className="px-4 py-3 text-xs align-top">
                                   <span className="font-mono">{item.model}</span>
-                                </td>
-                                <td className="px-4 py-3 align-top">
+                                </TableCell>
+                                <TableCell className="px-4 py-3 text-xs align-top">
+                                  {item.duration !== undefined && item.duration !== null ? (
+                                    <span className="font-mono text-muted-foreground">{item.duration}ms</span>
+                                  ) : (
+                                    <span className="text-muted-foreground/50">-</span>
+                                  )}
+                                </TableCell>
+                                <TableCell className="px-4 py-3 align-top">
                                   <div className="space-y-1">
                                     <pre
                                       className={`text-xs whitespace-pre-wrap break-words ${
@@ -777,8 +1039,8 @@ export default function LLMAPITester() {
                                       </button>
                                     )}
                                   </div>
-                                </td>
-                                <td className="px-4 py-3 align-top">
+                                </TableCell>
+                                <TableCell className="px-4 py-3 align-top">
                                   <Button
                                     variant="outline"
                                     size="sm"
@@ -816,8 +1078,8 @@ export default function LLMAPITester() {
                                       )}
                                     </div>
                                   )}
-                                </td>
-                                <td className="px-4 py-3 align-top">
+                                </TableCell>
+                                <TableCell className="px-4 py-3 align-top">
                                   <div className="space-y-1">
                                     <pre
                                       className={`text-xs whitespace-pre-wrap break-words ${
@@ -845,8 +1107,8 @@ export default function LLMAPITester() {
                                       </button>
                                     )}
                                   </div>
-                                </td>
-                                <td className="px-4 py-3 align-top">
+                                </TableCell>
+                                <TableCell className="px-4 py-3 align-top">
                                   <Button
                                     variant="outline"
                                     size="sm"
@@ -884,8 +1146,8 @@ export default function LLMAPITester() {
                                       )}
                                     </div>
                                   )}
-                                </td>
-                                <td className="px-4 py-3 text-center align-top">
+                                </TableCell>
+                                <TableCell className="px-4 py-3 text-center align-top">
                                   <Button
                                     variant="ghost"
                                     size="sm"
@@ -894,11 +1156,11 @@ export default function LLMAPITester() {
                                   >
                                     <Trash2 className="size-4" />
                                   </Button>
-                                </td>
-                              </tr>
+                                </TableCell>
+                              </TableRow>
                             )
                           })}
-                        </tbody>
+                        </TableBody>
                       </table>
                     </div>
                   </div>
@@ -967,23 +1229,28 @@ export default function LLMAPITester() {
                     <CardTitle>响应详情</CardTitle>
                     <CardDescription>API 返回的完整响应</CardDescription>
                   </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      if (responseData) {
-                        const cleanedResponse = responseData
-                          .split("\n")
-                          .filter((line) => line.trim() !== "")
-                          .join("\n")
-                        handleCopy(cleanedResponse, "response")
-                      }
-                    }}
-                    disabled={!responseData}
-                  >
-                    <Copy className="h-4 w-4 mr-1" />
-                    {responseCopyText}
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    {responseDuration !== null && (
+                      <div className="text-xs text-muted-foreground font-mono">用时: {responseDuration}ms</div>
+                    )}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        if (responseData) {
+                          const cleanedResponse = responseData
+                            .split("\n")
+                            .filter((line) => line.trim() !== "")
+                            .join("\n")
+                          handleCopy(cleanedResponse, "response")
+                        }
+                      }}
+                      disabled={!responseData}
+                    >
+                      <Copy className="h-4 w-4 mr-1" />
+                      {responseCopyText}
+                    </Button>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent className="flex-1 overflow-hidden">
