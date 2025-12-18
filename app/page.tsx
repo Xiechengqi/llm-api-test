@@ -1932,7 +1932,7 @@ export default function LLMAPITester() {
                                             {expandedCells.has(responseContentId) ? (
                                               <>
                                                 <ChevronUp className="size-3" />
-                                                收起\
+                                                收起
                                               </>
                                             ) : (
                                               <>
