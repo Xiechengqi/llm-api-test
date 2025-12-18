@@ -1,5 +1,7 @@
 "use client"
 
+import { TableHeader } from "@/components/ui/table"
+
 import { CardDescription } from "@/components/ui/card"
 import {
   Copy,
@@ -15,6 +17,8 @@ import {
   ChevronUp,
   Play,
   StopCircle,
+  Download,
+  Zap,
 } from "lucide-react" // Import Copy, Pencil, List, Eye, EyeOff, RotateCcw, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Calendar, Check, Clock, X, Play, StopCircle icons
 
 import { useState, useEffect, useRef } from "react" // Import useRef
@@ -27,9 +31,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Slider } from "@/components/ui/slider"
 import { useToast } from "@/hooks/use-toast"
 import { Toaster } from "@/components/ui/toaster"
-import { TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table" // Import Table components
+import { TableBody, TableCell, TableHead, TableRow, Table } from "@/components/ui/table" // Import Table components
 
 const API_PROVIDERS = [
+  {
+    id: "openrouter",
+    name: "OpenRouter",
+    endpoint: "https://openrouter.ai/api/v1/chat/completions",
+  },
   {
     id: "openai",
     name: "OpenAI",
@@ -54,11 +63,6 @@ const API_PROVIDERS = [
     id: "xai",
     name: "xAI",
     endpoint: "https://api.x.ai/v1/chat/completions",
-  },
-  {
-    id: "openrouter",
-    name: "OpenRouter",
-    endpoint: "https://openrouter.ai/api/v1/chat/completions",
   },
   {
     id: "custom",
@@ -86,23 +90,34 @@ interface OpenRouterModel {
 
 export default function LLMAPITester() {
   const DEFAULT_VALUES = {
-    provider: "openai",
-    endpoint: "https://api.openai.com/v1/chat/completions",
-    model: "gpt-3.5-turbo",
-    prompt: "Hello, how are you?",
-    maxTokens: 1024,
-    temperature: 0.7,
-    topP: 1,
-    frequencyPenalty: 0,
-    presencePenalty: 0,
+    provider: "openrouter" as const,
+    model: "",
+    apiKey: "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",
+    baseURL: "https://openrouter.ai",
+    apiPath: "/api/v1/chat/completions",
+    systemPrompt: "You are a helpful assistant.",
+    userMessage: "Hello! How are you today?",
+    maxTokens: 4096,
+    temperature: 1.0,
+    topP: 1.0,
+    frequencyPenalty: 0.0,
+    presencePenalty: 0.0,
+    showRawColumns: false,
+    expandRequestContent: false,
+    expandResponseContent: false,
     timerEnabled: false,
-    timerInterval: 60, // Add timerInterval to default values
+    timerInterval: 60,
+    maxTokensLimit: 8192,
+    pageSize: 10,
+    prompt: "", // Added prompt to default values
   }
 
   const [provider, setProvider] = useState(DEFAULT_VALUES.provider)
-  const [endpoint, setEndpoint] = useState(DEFAULT_VALUES.endpoint)
-  const [apiKey, setApiKey] = useState("")
+  const [endpoint, setEndpoint] = useState("") // This state seems redundant with baseUrl, consider consolidating.
+  const [apiKey, setApiKey] = useState(DEFAULT_VALUES.apiKey)
   const [showApiKey, setShowApiKey] = useState(false)
+  const [isPromptExpanded, setIsPromptExpanded] = useState(false)
+  const [isSystemPromptExpanded, setIsSystemPromptExpanded] = useState(false)
   const [model, setModel] = useState("")
   const [openrouterModels, setOpenrouterModels] = useState<OpenRouterModel[]>([])
   const [isLoadingModels, setIsLoadingModels] = useState(false)
@@ -112,18 +127,30 @@ export default function LLMAPITester() {
   const [topP, setTopP] = useState(DEFAULT_VALUES.topP)
   const [frequencyPenalty, setFrequencyPenalty] = useState(DEFAULT_VALUES.frequencyPenalty)
   const [presencePenalty, setPresencePenalty] = useState(DEFAULT_VALUES.presencePenalty)
+  const [stream, setStream] = useState(false) // Added stream state
   const [loading, setLoading] = useState(false)
   const [requestData, setRequestData] = useState("")
   const [responseData, setResponseData] = useState("")
   const [error, setError] = useState("")
-  const [maxTokensLimit, setMaxTokensLimit] = useState(8192)
-  const [prompt, setPrompt] = useState(DEFAULT_VALUES.prompt) // Declare setPrompt variable
+  const [maxTokensLimit, setMaxTokensLimit] = useState(DEFAULT_VALUES.maxTokensLimit)
+  const [prompt, setPrompt] = useState(DEFAULT_VALUES.prompt) // This state seems redundant with userMessage, consider consolidating.
+
+  const [baseURL, setBaseURL] = useState(DEFAULT_VALUES.baseURL) // Added baseURL state
+  const [apiPath, setApiPath] = useState(DEFAULT_VALUES.apiPath) // Added apiPath state
+  const [systemPrompt, setSystemPrompt] = useState(DEFAULT_VALUES.systemPrompt) // Added systemPrompt state
+  const [userMessage, setUserMessage] = useState(DEFAULT_VALUES.userMessage) // Added userMessage state
 
   const [history, setHistory] = useState<HistoryItem[]>([])
-  const [pageSize, setPageSize] = useState(10)
+  const [pageSize, setPageSize] = useState(DEFAULT_VALUES.pageSize)
   const [currentPage, setCurrentPage] = useState(1)
   const [expandedCells, setExpandedCells] = useState<Set<string>>(new Set())
   const [visibleRawCells, setVisibleRawCells] = useState<Set<string>>(new Set()) // State to track visible raw columns per history item
+  const [showRawColumns, setShowRawColumns] = useState<boolean>(DEFAULT_VALUES.showRawColumns)
+  const [expandRequestContent, setExpandRequestContent] = useState<boolean>(DEFAULT_VALUES.expandRequestContent)
+  const [expandResponseContent, setExpandResponseContent] = useState<boolean>(DEFAULT_VALUES.expandResponseContent)
+
+  const [probeStatus, setProbeStatus] = useState<"idle" | "success" | "error">("idle")
+  const [probeDuration, setProbeDuration] = useState<number | null>(null)
 
   const [timerEnabled, setTimerEnabled] = useState(DEFAULT_VALUES.timerEnabled)
   const [timerInterval, setTimerInterval] = useState(DEFAULT_VALUES.timerInterval)
@@ -134,119 +161,118 @@ export default function LLMAPITester() {
   const { toast } = useToast()
 
   // Use a unified base URL for API calls
-  const baseUrl = endpoint || DEFAULT_VALUES.endpoint
+  const unifiedEndpoint = baseURL.endsWith("/") ? baseURL.slice(0, -1) : baseURL // Remove trailing slash
+  const fullApiPath = `${unifiedEndpoint}${apiPath}`
 
+  // Use a single useEffect for loading from localStorage
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      const savedProvider = localStorage.getItem("llm_api_provider")
-      const savedEndpoint = localStorage.getItem("llm_api_endpoint")
-      const savedApiKey = localStorage.getItem("llm_api_key")
-      const savedModel = localStorage.getItem("llm_api_model")
-      const savedPrompt = localStorage.getItem("llm_api_prompt")
-      const savedMaxTokens = localStorage.getItem("llm_api_maxTokens")
-      const savedTemperature = localStorage.getItem("llm_api_temperature")
-      const savedTopP = localStorage.getItem("llm_api_topP")
-      const savedFrequencyPenalty = localStorage.getItem("llm_api_frequencyPenalty")
-      const savedPresencePenalty = localStorage.getItem("llm_api_presencePenalty")
-      const savedHistory = localStorage.getItem("llm_api_history")
-      // Load timer settings from localStorage
-      const savedTimerEnabled = localStorage.getItem("llm_api_timerEnabled")
-      const savedTimerInterval = localStorage.getItem("llm_api_timerInterval")
+    const saved = localStorage.getItem("llm-api-test-settings")
+    if (saved) {
+      const settings = JSON.parse(saved)
+      setProvider(settings.provider ?? DEFAULT_VALUES.provider)
+      setModel(settings.model ?? DEFAULT_VALUES.model)
+      setApiKey(settings.apiKey ?? DEFAULT_VALUES.apiKey)
+      setBaseURL(settings.baseURL ?? DEFAULT_VALUES.baseURL)
+      setApiPath(settings.apiPath ?? DEFAULT_VALUES.apiPath)
+      setSystemPrompt(settings.systemPrompt ?? DEFAULT_VALUES.systemPrompt)
+      setUserMessage(settings.userMessage ?? DEFAULT_VALUES.userMessage)
+      setMaxTokens(settings.maxTokens ?? DEFAULT_VALUES.maxTokens)
+      setTemperature(settings.temperature ?? DEFAULT_VALUES.temperature)
+      setTopP(settings.topP ?? DEFAULT_VALUES.topP)
+      setFrequencyPenalty(settings.frequencyPenalty ?? DEFAULT_VALUES.frequencyPenalty)
+      setPresencePenalty(settings.presencePenalty ?? DEFAULT_VALUES.presencePenalty)
+      setShowRawColumns(settings.showRawColumns ?? DEFAULT_VALUES.showRawColumns)
+      setExpandRequestContent(settings.expandRequestContent ?? DEFAULT_VALUES.expandRequestContent)
+      setExpandResponseContent(settings.expandResponseContent ?? DEFAULT_VALUES.expandResponseContent)
+      setTimerEnabled(settings.timerEnabled ?? DEFAULT_VALUES.timerEnabled)
+      setTimerInterval(settings.timerInterval ?? DEFAULT_VALUES.timerInterval)
+      setMaxTokensLimit(settings.maxTokensLimit ?? DEFAULT_VALUES.maxTokensLimit)
+      setPageSize(settings.pageSize ?? DEFAULT_VALUES.pageSize)
+      setPrompt(settings.prompt ?? DEFAULT_VALUES.prompt) // Load prompt from settings
+    } else {
+      // First time load: initialize baseURL and apiPath for default provider
+      const defaultProvider = API_PROVIDERS.find((p) => p.id === DEFAULT_VALUES.provider)
+      if (defaultProvider?.endpoint) {
+        try {
+          const url = new URL(defaultProvider.endpoint)
+          setBaseURL(url.origin)
+          setApiPath(url.pathname)
+        } catch (e) {
+          console.error("Invalid default endpoint format:", defaultProvider.endpoint, e)
+        }
+      }
+    }
 
-      if (savedProvider) setProvider(savedProvider)
-      if (savedEndpoint) setEndpoint(savedEndpoint)
-      if (savedApiKey) setApiKey(savedApiKey)
-      if (savedModel) setModel(savedModel)
-      if (savedPrompt) setPrompt(savedPrompt)
-      if (savedMaxTokens) setMaxTokens(Number(savedMaxTokens))
-      if (savedTemperature) setTemperature(Number(savedTemperature))
-      if (savedTopP) setTopP(Number(savedTopP))
-      if (savedFrequencyPenalty) setFrequencyPenalty(Number(savedFrequencyPenalty))
-      if (savedPresencePenalty) setPresencePenalty(Number(savedPresencePenalty))
-      if (savedHistory) setHistory(JSON.parse(savedHistory))
-      // Set timer states from localStorage if available
-      if (savedTimerEnabled) setTimerEnabled(savedTimerEnabled === "true")
-      if (savedTimerInterval) setTimerInterval(Number(savedTimerInterval))
+    // Load history with migration from old key
+    const savedHistory = localStorage.getItem("llm_api_history")
+    if (savedHistory) {
+      setHistory(JSON.parse(savedHistory))
+    } else {
+      // Migrate from old key if exists
+      const oldHistory = localStorage.getItem("llm-api-test-history")
+      if (oldHistory) {
+        setHistory(JSON.parse(oldHistory))
+        localStorage.setItem("llm_api_history", oldHistory)
+        localStorage.removeItem("llm-api-test-history")
+      }
     }
   }, [])
 
+  // Save settings
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("llm_api_provider", provider)
-    }
-  }, [provider])
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("llm_api_endpoint", endpoint)
-    }
-  }, [endpoint])
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("llm_api_key", apiKey)
-    }
-  }, [apiKey])
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("llm_api_model", model)
-    }
-  }, [model])
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("llm_api_prompt", prompt)
-    }
-  }, [prompt])
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("llm_api_maxTokens", String(maxTokens))
-    }
-  }, [maxTokens])
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("llm_api_temperature", String(temperature))
-    }
-  }, [temperature])
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("llm_api_topP", String(topP))
-    }
-  }, [topP])
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("llm_api_frequencyPenalty", String(frequencyPenalty))
-    }
-  }, [frequencyPenalty])
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("llm_api_presencePenalty", String(presencePenalty))
-    }
-  }, [presencePenalty])
+    localStorage.setItem(
+      "llm-api-test-settings",
+      JSON.stringify({
+        provider,
+        model,
+        apiKey,
+        baseURL,
+        apiPath,
+        systemPrompt,
+        userMessage,
+        maxTokens,
+        temperature,
+        topP,
+        frequencyPenalty,
+        presencePenalty,
+        showRawColumns,
+        expandRequestContent,
+        expandResponseContent,
+        timerEnabled,
+        timerInterval,
+        maxTokensLimit,
+        pageSize,
+        prompt, // Save prompt
+      }),
+    )
+  }, [
+    provider,
+    model,
+    apiKey,
+    baseURL,
+    apiPath,
+    systemPrompt,
+    userMessage,
+    maxTokens,
+    temperature,
+    topP,
+    frequencyPenalty,
+    presencePenalty,
+    showRawColumns,
+    expandRequestContent,
+    expandResponseContent,
+    timerEnabled,
+    timerInterval,
+    maxTokensLimit,
+    pageSize,
+    prompt, // Add prompt to dependencies
+  ])
 
   useEffect(() => {
     if (typeof window !== "undefined" && history.length > 0) {
       localStorage.setItem("llm_api_history", JSON.stringify(history))
     }
   }, [history])
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("llm_api_timerEnabled", String(timerEnabled))
-    }
-  }, [timerEnabled])
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("llm_api_timerInterval", String(timerInterval))
-    }
-  }, [timerInterval])
 
   useEffect(() => {
     // Cleanup interval on component unmount
@@ -257,13 +283,122 @@ export default function LLMAPITester() {
     }
   }, [])
 
+  const runProbeTest = async () => {
+    if (!apiKey || !model || !fullApiPath) return // Added fullApiPath check
+
+    toast({
+      title: "探针测试开始",
+      description: `提供商: ${provider}, 模型: ${model}`,
+      className: "bg-blue-50 border-blue-200",
+      duration: 3000,
+    })
+
+    try {
+      const startTime = performance.now()
+
+      const requestBody = {
+        model: model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: "hello" },
+        ],
+        max_tokens: 100, // Small token count for probe
+        temperature: 1,
+        top_p: 1,
+        frequency_penalty: 0,
+        presence_penalty: 0,
+      }
+
+      const response = await fetch(fullApiPath, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(requestBody),
+        signal: AbortSignal.timeout(10000), // 10 second timeout for probe
+      })
+
+      const duration = Math.round(performance.now() - startTime)
+      setProbeDuration(duration)
+
+      // Check if response is JSON
+      const contentType = response.headers.get("content-type")
+      if (!contentType?.includes("application/json")) {
+        const text = await response.text()
+        setProbeStatus("error")
+        toast({
+          variant: "destructive",
+          title: "探针测试失败",
+          description: `服务器返回非JSON响应 (状态码: ${response.status})`,
+          duration: 3000,
+        })
+        return
+      }
+
+      const data = await response.json()
+
+      if (response.ok && data.choices?.[0]?.message) {
+        setProbeStatus("success")
+        toast({
+          title: "探针测试成功",
+          description: `API 配置正常，响应用时: ${duration}ms`,
+          className: "bg-green-50 border-green-200", // Custom styling for success toast
+          duration: 3000, // 3 seconds
+        })
+      } else {
+        setProbeStatus("error")
+        toast({
+          variant: "destructive",
+          title: "探针测试失败",
+          description: data.error?.message || "API 返回异常",
+          duration: 3000, // 3 seconds
+        })
+      }
+    } catch (error) {
+      setProbeStatus("error")
+      setProbeDuration(null)
+      toast({
+        variant: "destructive",
+        title: "探针测试失败",
+        description: error instanceof Error ? error.message : "网络请求失败",
+        duration: 3000, // 3 seconds
+      })
+    }
+  }
+
+  // CHANGE: Increased delay from 500ms to 5000ms (5 seconds) to prevent rapid probe firing when quickly changing settings
+  useEffect(() => {
+    if (apiKey && model && fullApiPath) {
+      // 5 second delay to avoid triggering probe on rapid configuration changes
+      const timer = setTimeout(() => {
+        runProbeTest()
+      }, 5000)
+      return () => clearTimeout(timer)
+    } else {
+      setProbeStatus("idle") // Reset status if any condition is not met
+    }
+  }, [apiKey, model, fullApiPath]) // Dependencies for the effect
+
   const handleProviderChange = (providerId: string) => {
     setProvider(providerId)
     const selectedProvider = API_PROVIDERS.find((p) => p.id === providerId)
-    if (selectedProvider && selectedProvider.endpoint) {
-      setEndpoint(selectedProvider.endpoint)
-    } else {
-      setEndpoint("")
+    if (selectedProvider) {
+      if (selectedProvider.endpoint) {
+        // For known providers, parse endpoint into baseURL and apiPath
+        try {
+          const url = new URL(selectedProvider.endpoint)
+          setBaseURL(url.origin)
+          setApiPath(url.pathname)
+        } catch (e) {
+          console.error("Invalid endpoint format:", selectedProvider.endpoint, e)
+          setBaseURL("")
+          setApiPath(selectedProvider.endpoint) // Fallback to full endpoint if URL parsing fails
+        }
+      } else {
+        setBaseURL("")
+        setApiPath("/v1/chat/completions") // Default path for custom provider
+      }
     }
 
     if (providerId === "openrouter") {
@@ -279,6 +414,9 @@ export default function LLMAPITester() {
         const data = await response.json()
         // Assuming the API returns an array of model objects with an 'id' field
         setOpenrouterModels(Array.isArray(data) ? data : [])
+        if (Array.isArray(data) && data.length > 0 && !model) {
+          setModel(data[0].id)
+        }
       } else {
         console.error("[v0] Failed to fetch OpenRouter models:", response.statusText)
         setOpenrouterModels([])
@@ -314,20 +452,35 @@ export default function LLMAPITester() {
     setResponseDuration(null) // Reset duration on new test
 
     const modelToUse = model || DEFAULT_VALUES.model
+    // Use systemPrompt and userMessage instead of prompt
+    const messages = [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userMessage },
+    ]
 
     const requestBody = {
       model: modelToUse,
-      messages: [{ role: "user", content: prompt }],
+      messages: messages,
       max_tokens: maxTokens,
       temperature,
       top_p: topP,
       frequency_penalty: frequencyPenalty,
       presence_penalty: presencePenalty,
+      stream: stream, // Include stream parameter
     }
 
-    const requestCurl = `curl ${endpoint} \\
-  -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer ${apiKey}" \\
+    // Generate cURL command, handling potential undefined values for headers
+    const curlHeaders = ["Content-Type: application/json", `Authorization: Bearer ${apiKey}`]
+    if (baseURL && provider === "custom") {
+      // Example for custom header, adjust as needed for other providers if they require different headers
+      // For OpenAI, Anthropic, etc., Authorization is usually enough.
+      // For some custom setups, an additional API key might be needed.
+      // curlHeaders.push(`X-Custom-Auth: ${apiKey}`)
+    }
+
+    const requestCurl = `curl ${fullApiPath} \\
+  -X POST \\
+  ${curlHeaders.map((h) => `-H "${h}" \\`).join("")}
   -d '${JSON.stringify(requestBody, null, 2).replace(/\n/g, "\n  ")}'`
 
     setRequestData(requestCurl)
@@ -340,7 +493,7 @@ export default function LLMAPITester() {
     try {
       const startTime = performance.now() // Track start time
 
-      const response = await fetch(endpoint, {
+      const response = await fetch(fullApiPath, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -376,13 +529,16 @@ export default function LLMAPITester() {
       )
       setResponseData(formattedResponse)
 
-      const requestContent = requestBody.messages?.[requestBody.messages.length - 1]?.content || prompt
-      const responseContent = parsedResponse?.choices?.[0]?.message?.content || JSON.stringify(parsedResponse)
+      const requestContent = [...messages].reverse().map((msg) => `${msg.role}: ${msg.content}`).join("\n") // user first, then system
+      const responseContent =
+        parsedResponse?.choices?.[0]?.message?.content ||
+        parsedResponse?.content?.[0]?.text ||
+        JSON.stringify(parsedResponse) // Adjusted to handle potential differences in response structure
 
       const historyItem: HistoryItem = {
         id: Date.now().toString(),
         timestamp: Date.now(),
-        model: model || "gpt-3.5-turbo", // Add model to history item
+        model: modelToUse, // Use the actual model used
         requestContent,
         requestRaw: requestCurl,
         responseContent,
@@ -441,7 +597,7 @@ export default function LLMAPITester() {
       const newHistoryItem: HistoryItem = {
         id: Date.now().toString(),
         timestamp: Date.now(),
-        model: model || "gpt-3.5-turbo", // Add model to history item
+        model: modelToUse, // Add model to history item
         requestContent: "",
         requestRaw: "",
         responseContent: "",
@@ -496,42 +652,48 @@ export default function LLMAPITester() {
 
   const handleResetApiConfig = () => {
     setProvider(DEFAULT_VALUES.provider)
-    setEndpoint(DEFAULT_VALUES.endpoint)
+    setBaseURL(DEFAULT_VALUES.baseURL)
+    setApiPath(DEFAULT_VALUES.apiPath)
     setApiKey("")
     setModel("")
     setError("")
     setShowApiKey(false) // Reset API Key visibility
+    setProbeStatus("idle") // Reset probe status
+    setSystemPrompt(DEFAULT_VALUES.systemPrompt) // Reset systemPrompt
+    setUserMessage(DEFAULT_VALUES.userMessage) // Reset userMessage
+    setPrompt(DEFAULT_VALUES.prompt) // Reset prompt
 
-    if (typeof window !== "undefined") {
-      localStorage.removeItem("llm_api_provider")
-      localStorage.removeItem("llm_api_endpoint")
-      localStorage.removeItem("llm_api_key")
-      localStorage.removeItem("llm_api_model")
-    }
+    // Remove specific items from localStorage
+    localStorage.removeItem("llm-api-test-settings")
+    // Consider removing individual keys if they were previously saved separately
   }
 
   const handleResetParameters = () => {
-    setPrompt(DEFAULT_VALUES.prompt)
+    setPrompt(DEFAULT_VALUES.prompt) // This seems to reset the old prompt state, consider if userMessage is preferred
     setMaxTokens(DEFAULT_VALUES.maxTokens)
     setTemperature(DEFAULT_VALUES.temperature)
     setTopP(DEFAULT_VALUES.topP)
     setFrequencyPenalty(DEFAULT_VALUES.frequencyPenalty)
     setPresencePenalty(DEFAULT_VALUES.presencePenalty)
+    setStream(false) // Reset stream
     // Reset timer settings and stop timer if running
     setTimerEnabled(DEFAULT_VALUES.timerEnabled)
     setTimerInterval(DEFAULT_VALUES.timerInterval)
     stopTimer() // Ensure timer is stopped on reset
+    setShowRawColumns(DEFAULT_VALUES.showRawColumns) // Reset showRawColumns
+    // Reset separate expand states
+    setExpandRequestContent(DEFAULT_VALUES.expandRequestContent)
+    setExpandResponseContent(DEFAULT_VALUES.expandResponseContent)
+    setSystemPrompt(DEFAULT_VALUES.systemPrompt) // Reset system prompt
+    setUserMessage(DEFAULT_VALUES.userMessage) // Reset user message
 
-    if (typeof window !== "undefined") {
-      localStorage.removeItem("llm_api_prompt")
-      localStorage.removeItem("llm_api_maxTokens")
-      localStorage.removeItem("llm_api_temperature")
-      localStorage.removeItem("llm_api_topP")
-      localStorage.removeItem("llm_api_frequencyPenalty")
-      localStorage.removeItem("llm_api_presencePenalty")
-      localStorage.removeItem("llm_api_timerEnabled")
-      localStorage.removeItem("llm_api_timerInterval")
-    }
+    // Remove specific items from localStorage related to parameters
+    localStorage.removeItem("llm-api-test-settings") // Clear all settings and reload defaults
+  }
+
+  const handleReset = () => {
+    handleResetApiConfig()
+    handleResetParameters()
   }
 
   const handleDeleteHistoryItem = (id: string) => {
@@ -539,6 +701,8 @@ export default function LLMAPITester() {
     const updatedHistory = history.filter((item) => item.id !== id)
     if (updatedHistory.length === 0) {
       localStorage.removeItem("llm_api_history")
+    } else {
+      localStorage.setItem("llm_api_history", JSON.stringify(updatedHistory))
     }
   }
 
@@ -547,9 +711,70 @@ export default function LLMAPITester() {
     setCurrentPage(1)
     setExpandedCells(new Set())
     setVisibleRawCells(new Set()) // Clear visible raw cells on history clear
-    if (typeof window !== "undefined") {
-      localStorage.removeItem("llm_api_history")
-    }
+    localStorage.removeItem("llm_api_history")
+  }
+
+  const exportHistoryToCSV = () => {
+    if (history.length === 0) return
+
+    // Define CSV headers based on showRawColumns state
+    const headers = showRawColumns
+      ? ["时间", "模型", "用时(ms)", "请求 Content", "请求 Raw", "响应 Content", "响应 Raw"]
+      : ["时间", "模型", "用时(ms)", "请求 Content", "响应 Content"]
+
+    // Convert history data to CSV rows
+    const rows = history.map((item) => {
+      const timestamp = new Date(item.timestamp).toLocaleString("zh-CN", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      })
+      const duration = item.duration !== undefined && item.duration !== null ? item.duration : "-"
+
+      // Escape double quotes and wrap fields in quotes
+      const escapeCSV = (text: string) => {
+        if (text === null || text === undefined) return '""'
+        return `"${String(text).replace(/"/g, '""')}"`
+      }
+
+      // Build row based on showRawColumns state
+      const rowData = showRawColumns
+        ? [
+            escapeCSV(timestamp),
+            escapeCSV(item.model),
+            escapeCSV(String(duration)),
+            escapeCSV(item.requestContent),
+            escapeCSV(item.requestRaw),
+            escapeCSV(item.responseContent),
+            escapeCSV(item.responseRaw),
+          ]
+        : [
+            escapeCSV(timestamp),
+            escapeCSV(item.model),
+            escapeCSV(String(duration)),
+            escapeCSV(item.requestContent),
+            escapeCSV(item.responseContent),
+          ]
+
+      return rowData.join(",")
+    })
+
+    // Combine headers and rows
+    const csv = [headers.join(","), ...rows].join("\n")
+
+    // Create blob and download
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" })
+    const link = document.createElement("a")
+    const url = URL.createObjectURL(blob)
+    link.setAttribute("href", url)
+    link.setAttribute("download", `llm_api_history_${Date.now()}.csv`)
+    link.style.visibility = "hidden"
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
   }
 
   const toggleCellExpansion = (cellId: string) => {
@@ -615,11 +840,82 @@ export default function LLMAPITester() {
     }
   }
 
+  const renderContentWithCodeBlocks = (content: string, cellId: string, isExpanded: boolean) => {
+    // Try to detect if content is JSON
+    let processedContent = content
+    let isJson = false
+
+    try {
+      // Check if content looks like JSON (starts with { or [)
+      const trimmed = content.trim()
+      if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+        // Try to parse to verify it's valid JSON
+        JSON.parse(trimmed)
+        // If successfully parsed, wrap original content in json code block without formatting
+        processedContent = "```json\n" + trimmed + "\n```"
+        isJson = true
+      }
+    } catch (e) {
+      // Not valid JSON, use original content
+    }
+
+    const parts = processedContent.split(/(```[\s\S]*?```)/g)
+
+    return parts.map((part, index) => {
+      if (part.startsWith("```") && part.endsWith("```")) {
+        const lines = part.split("\n")
+        const language = lines[0].replace("```", "").trim()
+        const codeLines = lines.slice(1, -1)
+        const code = codeLines.join("\n")
+        const lineCount = codeLines.length
+
+        return (
+          <div key={index} className="my-2 rounded-md bg-muted overflow-hidden border relative">
+            {language && <div className="px-3 py-1 text-xs text-muted-foreground bg-muted/50 border-b">{language}</div>}
+            <pre
+              className={`p-3 overflow-x-auto text-xs ${
+                !isExpanded && lineCount > 3 ? "max-h-24 overflow-y-hidden" : ""
+              }`}
+            >
+              <code className="block">{code}</code>
+            </pre>
+            {!isExpanded && lineCount > 3 && (
+              <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-muted to-transparent pointer-events-none" />
+            )}
+          </div>
+        )
+      }
+      return (
+        <span key={index} className={`${!isExpanded && part.trim().length > 100 ? "line-clamp-2" : ""}`}>
+          {part}
+        </span>
+      )
+    })
+  }
+
+  // Fixed: Corrected closing tag for Table and removed undeclared variable expandAllHistory
+  const expandAllHistory = false // Placeholder to resolve lint error, can be replaced with actual state if needed.
+
   return (
     <div className="min-h-screen bg-background">
       <nav className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="flex h-16 items-center gap-4 px-4 md:px-8">
-          <h1 className="text-balance text-xl font-bold tracking-tight">LLM API 测试工具</h1>
+          {/* Removed h1 and added Zap icon and new h1 */}
+          <div className="flex items-center gap-2">
+            <Zap className="size-6 text-primary" />
+            <h1 className="text-balance text-xl font-bold tracking-tight">LLM API 测试工具</h1>
+            {probeStatus !== "idle" && (
+              <div className="ml-2 flex items-center gap-1.5">
+                <div
+                  className={`size-2 rounded-full ${probeStatus === "success" ? "bg-green-500" : "bg-red-500"}`}
+                  title={probeStatus === "success" ? "API 配置正常" : "API 配置异常"}
+                />
+                {probeStatus === "success" && probeDuration && (
+                  <span className="text-xs text-muted-foreground">{probeDuration}ms</span>
+                )}
+              </div>
+            )}
+          </div>
 
           <div className="ml-auto flex items-center gap-3">
             <Select value={provider} onValueChange={handleProviderChange}>
@@ -704,24 +1000,36 @@ export default function LLMAPITester() {
                 {showApiKey ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
               </Button>
             </div>
-
-            <Button variant="outline" size="sm" onClick={handleResetApiConfig}>
-              <RotateCcw className="size-4" />
+            <Button variant="outline" size="sm" onClick={handleReset}>
+              <RotateCcw className="mr-2 size-4" />
+              重置
             </Button>
           </div>
         </div>
 
-        {provider === "custom" && (
+        {(provider === "custom" || !API_PROVIDERS.find((p) => p.id === provider)?.endpoint) && (
           <div className="border-t px-4 py-3 md:px-8">
             <div className="flex items-center gap-2">
-              <Label htmlFor="customEndpoint" className="text-sm font-medium whitespace-nowrap">
-                自定义 API 端点
+              <Label htmlFor="baseURL" className="text-sm font-medium whitespace-nowrap">
+                Base URL
               </Label>
               <Input
-                id="customEndpoint"
-                value={endpoint}
-                onChange={(e) => setEndpoint(e.target.value)}
-                placeholder="https://api.example.com/v1/chat/completions"
+                id="baseURL"
+                value={baseURL}
+                onChange={(e) => setBaseURL(e.target.value)}
+                placeholder="https://api.example.com"
+                className="max-w-2xl"
+              />
+            </div>
+            <div className="flex items-center gap-2 mt-2">
+              <Label htmlFor="apiPath" className="text-sm font-medium whitespace-nowrap">
+                API Path
+              </Label>
+              <Input
+                id="apiPath"
+                value={apiPath}
+                onChange={(e) => setApiPath(e.target.value)}
+                placeholder="/v1/chat/completions"
                 className="max-w-2xl"
               />
             </div>
@@ -742,7 +1050,7 @@ export default function LLMAPITester() {
                 <div className="flex items-center gap-2">
                   <Button variant="outline" size="sm" onClick={handleResetParameters}>
                     <RotateCcw className="mr-2 size-4" />
-                    重置
+                    重置参数
                   </Button>
                   {isTimerRunning ? (
                     <Button onClick={stopTimer} variant="destructive" size="sm">
@@ -770,17 +1078,72 @@ export default function LLMAPITester() {
             <CardContent className="space-y-6">
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <Label htmlFor="prompt">提示词</Label>
+                  <div>
+                    <Label htmlFor="userMessage">用户消息</Label>
                     <p className="text-xs text-muted-foreground">输入测试用的消息内容</p>
                   </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setIsPromptExpanded(!isPromptExpanded)}
+                  >
+                    {isPromptExpanded ? (
+                      <>
+                        <ChevronUp className="mr-1 h-4 w-4" />
+                        收起
+                      </>
+                    ) : (
+                      <>
+                        <ChevronDown className="mr-1 h-4 w-4" />
+                        展开
+                      </>
+                    )}
+                  </Button>
                 </div>
                 <Textarea
-                  id="prompt"
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
+                  id="userMessage"
+                  value={userMessage}
+                  onChange={(e) => setUserMessage(e.target.value)}
                   placeholder="输入你的提示词..."
                   rows={3}
+                  className={isPromptExpanded ? "" : "max-h-32 overflow-y-auto"}
+                />
+              </div>
+
+              {/* System Prompt Input */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label htmlFor="systemPrompt">系统提示词</Label>
+                    <p className="text-xs text-muted-foreground">为 AI 设置角色或行为指令</p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setIsSystemPromptExpanded(!isSystemPromptExpanded)}
+                  >
+                    {isSystemPromptExpanded ? (
+                      <>
+                        <ChevronUp className="mr-1 h-4 w-4" />
+                        收起
+                      </>
+                    ) : (
+                      <>
+                        <ChevronDown className="mr-1 h-4 w-4" />
+                        展开
+                      </>
+                    )}
+                  </Button>
+                </div>
+                <Textarea
+                  id="systemPrompt"
+                  value={systemPrompt}
+                  onChange={(e) => setSystemPrompt(e.target.value)}
+                  placeholder="例如: 你是一个乐于助人的助手。"
+                  rows={2}
+                  className={isSystemPromptExpanded ? "" : "max-h-32 overflow-y-auto"}
                 />
               </div>
 
@@ -840,7 +1203,7 @@ export default function LLMAPITester() {
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium">{maxTokens}</span>
-                    <span className="text-xs text-muted-foreground">/</span>
+                    <span className="text-sm font-medium">/</span>
                     <Input
                       type="number"
                       value={maxTokensLimit}
@@ -872,7 +1235,7 @@ export default function LLMAPITester() {
                     <Label htmlFor="temperature">Temperature</Label>
                     <p className="text-xs text-muted-foreground">控制输出随机性，值越高越随机（范围: 0.0 - 2.0）</p>
                   </div>
-                  <span className="text-sm font-medium">{temperature.toFixed(2)}</span>
+                  <span className="text-sm font-medium">{temperature?.toFixed(2) ?? "1.00"}</span>
                 </div>
                 <Slider
                   id="temperature"
@@ -890,7 +1253,7 @@ export default function LLMAPITester() {
                     <Label htmlFor="topP">Top P</Label>
                     <p className="text-xs text-muted-foreground">核采样，控制输出多样性（范围: 0.0 - 1.0）</p>
                   </div>
-                  <span className="text-sm font-medium">{topP.toFixed(2)}</span>
+                  <span className="text-sm font-medium">{topP?.toFixed(2) ?? "1.00"}</span>
                 </div>
                 <Slider id="topP" min={0} max={1} step={0.01} value={[topP]} onValueChange={(v) => setTopP(v[0])} />
               </div>
@@ -901,7 +1264,7 @@ export default function LLMAPITester() {
                     <Label htmlFor="frequencyPenalty">Frequency Penalty</Label>
                     <p className="text-xs text-muted-foreground">降低重复词频率，值越大惩罚越强（范围: -2.0 - 2.0）</p>
                   </div>
-                  <span className="text-sm font-medium">{frequencyPenalty.toFixed(2)}</span>
+                  <span className="text-sm font-medium">{frequencyPenalty?.toFixed(2) ?? "0.00"}</span>
                 </div>
                 <Slider
                   id="frequencyPenalty"
@@ -921,7 +1284,7 @@ export default function LLMAPITester() {
                       鼓励谈论新话题，值越大越倾向新内容（范围: -2.0 - 2.0）
                     </p>
                   </div>
-                  <span className="text-sm font-medium">{presencePenalty.toFixed(2)}</span>
+                  <span className="text-sm font-medium">{presencePenalty?.toFixed(2) ?? "0.00"}</span>
                 </div>
                 <Slider
                   id="presencePenalty"
@@ -946,6 +1309,15 @@ export default function LLMAPITester() {
                   <CardDescription>共 {history.length} 条记录</CardDescription>
                 </div>
                 <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-2 text-sm cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={showRawColumns}
+                      onChange={(e) => setShowRawColumns(e.target.checked)}
+                      className="size-4 cursor-pointer"
+                    />
+                    <span>显示 Raw</span>
+                  </label>
                   <Select value={String(pageSize)} onValueChange={(v) => setPageSize(Number(v))}>
                     <SelectTrigger className="w-[120px]">
                       <SelectValue />
@@ -960,6 +1332,10 @@ export default function LLMAPITester() {
                     <RotateCcw className="mr-2 size-4" />
                     清空
                   </Button>
+                  <Button variant="outline" size="sm" onClick={exportHistoryToCSV} disabled={history.length === 0}>
+                    <Download className="mr-2 size-4" />
+                    导出 CSV
+                  </Button>
                 </div>
               </div>
             </CardHeader>
@@ -970,28 +1346,50 @@ export default function LLMAPITester() {
                 <>
                   <div className="border rounded-lg overflow-hidden">
                     <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
+                      <Table>
                         <TableHeader>
                           <TableRow>
                             <TableHead className="w-[140px]">时间</TableHead>
                             <TableHead className="w-[160px]">模型</TableHead>
                             <TableHead className="w-[100px]">用时</TableHead>
-                            <TableHead>请求 Content</TableHead>
-                            <TableHead className="w-[100px]">请求 Raw</TableHead>
-                            <TableHead>响应 Content</TableHead>
-                            <TableHead className="w-[100px]">响应 Raw</TableHead>
+                            <TableHead>
+                              <div className="flex items-center gap-2">
+                                <span>请求 Content</span>
+                                <label className="flex items-center gap-1 cursor-pointer" title="展开所有请求内容">
+                                  <input
+                                    type="checkbox"
+                                    checked={expandRequestContent}
+                                    onChange={(e) => setExpandRequestContent(e.target.checked)}
+                                    className="size-3 cursor-pointer"
+                                  />
+                                </label>
+                              </div>
+                            </TableHead>
+                            {showRawColumns && <TableHead className="w-[100px]">请求 Raw</TableHead>}
+                            <TableHead>
+                              <div className="flex items-center gap-2">
+                                <span>响应 Content</span>
+                                <label className="flex items-center gap-1 cursor-pointer" title="展开所有响应内容">
+                                  <input
+                                    type="checkbox"
+                                    checked={expandResponseContent}
+                                    onChange={(e) => setExpandResponseContent(e.target.checked)}
+                                    className="size-3 cursor-pointer"
+                                  />
+                                </label>
+                              </div>
+                            </TableHead>
+                            {showRawColumns && <TableHead className="w-[100px]">响应 Raw</TableHead>}
                             <TableHead className="px-4 py-3 text-center font-medium w-[80px]">操作</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody className="divide-y">
                           {paginatedHistory.map((item) => {
-                            const requestContentId = `${item.id}-req-content`
-                            const requestRawId = `${item.id}-req-raw`
-                            const responseContentId = `${item.id}-res-content`
-                            const responseRawId = `${item.id}-res-raw`
+                            const requestContentId = `request-${item.timestamp}`
+                            const responseContentId = `response-${item.timestamp}`
 
                             return (
-                              <TableRow key={item.id} className="hover:bg-muted/50">
+                              <TableRow key={item.timestamp} className="hover:bg-muted/50">
                                 <TableCell className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap align-top">
                                   {new Date(item.timestamp).toLocaleString("zh-CN", {
                                     month: "2-digit",
@@ -1011,16 +1409,18 @@ export default function LLMAPITester() {
                                     <span className="text-muted-foreground/50">-</span>
                                   )}
                                 </TableCell>
-                                <TableCell className="px-4 py-3 align-top">
-                                  <div className="space-y-1">
+                                <TableCell>
+                                  <div className="max-w-xl">
                                     <pre
                                       className={`text-xs whitespace-pre-wrap break-words ${
-                                        !expandedCells.has(requestContentId) ? "line-clamp-2" : ""
+                                        !expandRequestContent && !expandedCells.has(requestContentId)
+                                          ? "line-clamp-2"
+                                          : ""
                                       }`}
                                     >
                                       {item.requestContent}
                                     </pre>
-                                    {item.requestContent.length > 100 && (
+                                    {!expandRequestContent && item.requestContent.length > 100 && (
                                       <button
                                         onClick={() => toggleCellExpansion(requestContentId)}
                                         className="text-xs text-primary hover:underline flex items-center gap-1"
@@ -1040,113 +1440,137 @@ export default function LLMAPITester() {
                                     )}
                                   </div>
                                 </TableCell>
-                                <TableCell className="px-4 py-3 align-top">
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() => toggleRawVisibility(requestRawId)}
-                                    className="h-7 text-xs"
-                                  >
-                                    {visibleRawCells.has(requestRawId) ? "隐藏" : "显示"}
-                                  </Button>
-                                  {visibleRawCells.has(requestRawId) && (
-                                    <div className="mt-2 space-y-1">
-                                      <pre
-                                        className={`text-xs bg-muted p-2 rounded whitespace-pre-wrap break-words ${
-                                          !expandedCells.has(requestRawId) ? "line-clamp-2" : ""
-                                        }`}
-                                      >
-                                        {item.requestRaw}
-                                      </pre>
-                                      {item.requestRaw.length > 100 && (
-                                        <button
-                                          onClick={() => toggleCellExpansion(requestRawId)}
-                                          className="text-xs text-primary hover:underline flex items-center gap-1"
+
+                                {showRawColumns && (
+                                  <TableCell className="px-4 py-3 align-top">
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => toggleRawVisibility(`request-raw-${item.timestamp}`)}
+                                      className="h-7 text-xs"
+                                    >
+                                      {visibleRawCells.has(`request-raw-${item.timestamp}`) ? "隐藏" : "显示"}
+                                    </Button>
+                                    {visibleRawCells.has(`request-raw-${item.timestamp}`) && (
+                                      <div className="mt-2 space-y-1">
+                                        <pre
+                                          className={`text-xs bg-muted p-2 rounded whitespace-pre-wrap break-words ${
+                                            !expandAllHistory && !expandedCells.has(`request-raw-${item.timestamp}`)
+                                              ? "line-clamp-2"
+                                              : ""
+                                          }`}
                                         >
-                                          {expandedCells.has(requestRawId) ? (
-                                            <>
-                                              <ChevronUp className="size-3" />
-                                              收起
-                                            </>
-                                          ) : (
-                                            <>
-                                              <ChevronDown className="size-3" />
-                                              展开
-                                            </>
-                                          )}
-                                        </button>
+                                          {item.requestRaw}
+                                        </pre>
+                                        {!expandAllHistory && item.requestRaw.length > 100 && (
+                                          <button
+                                            onClick={() => toggleCellExpansion(`request-raw-${item.timestamp}`)}
+                                            className="text-xs text-primary hover:underline flex items-center gap-1"
+                                          >
+                                            {expandedCells.has(`request-raw-${item.timestamp}`) ? (
+                                              <>
+                                                <ChevronUp className="size-3" />
+                                                收起
+                                              </>
+                                            ) : (
+                                              <>
+                                                <ChevronDown className="size-3" />
+                                                展开
+                                              </>
+                                            )}
+                                          </button>
+                                        )}
+                                      </div>
+                                    )}
+                                  </TableCell>
+                                )}
+                                <TableCell>
+                                  <div className="max-w-xl">
+                                    <div className="text-xs whitespace-pre-wrap break-words relative">
+                                      {renderContentWithCodeBlocks(
+                                        item.responseContent,
+                                        responseContentId,
+                                        expandResponseContent || expandedCells.has(responseContentId),
                                       )}
                                     </div>
-                                  )}
-                                </TableCell>
-                                <TableCell className="px-4 py-3 align-top">
-                                  <div className="space-y-1">
-                                    <pre
-                                      className={`text-xs whitespace-pre-wrap break-words ${
-                                        !expandedCells.has(responseContentId) ? "line-clamp-2" : ""
-                                      }`}
-                                    >
-                                      {item.responseContent}
-                                    </pre>
-                                    {item.responseContent.length > 100 && (
-                                      <button
-                                        onClick={() => toggleCellExpansion(responseContentId)}
-                                        className="text-xs text-primary hover:underline flex items-center gap-1"
-                                      >
-                                        {expandedCells.has(responseContentId) ? (
-                                          <>
-                                            <ChevronUp className="size-3" />
-                                            收起
-                                          </>
-                                        ) : (
-                                          <>
-                                            <ChevronDown className="size-3" />
-                                            展开
-                                          </>
-                                        )}
-                                      </button>
-                                    )}
+                                    {(() => {
+                                      const hasCodeBlock = item.responseContent.includes("```");
+                                      const codeBlockLines = hasCodeBlock
+                                        ? item.responseContent
+                                            .split("```")
+                                            .filter((_, i) => i % 2 === 1)[0]
+                                            ?.split("\n")?.length ?? 0
+                                        : 0;
+                                      const shouldShowToggle =
+                                        item.responseContent.length > 100 || (hasCodeBlock && codeBlockLines > 3);
+                                      return (
+                                        !expandResponseContent &&
+                                        shouldShowToggle && (
+                                          <button
+                                            onClick={() => toggleCellExpansion(responseContentId)}
+                                            className="text-xs text-primary hover:underline flex items-center gap-1"
+                                          >
+                                            {expandedCells.has(responseContentId) ? (
+                                              <>
+                                                <ChevronUp className="size-3" />
+                                                收起\
+                                              </>
+                                            ) : (
+                                              <>
+                                                <ChevronDown className="size-3" />
+                                                展开
+                                              </>
+                                            )}
+                                          </button>
+                                        )
+                                      )
+                                    })()}
                                   </div>
                                 </TableCell>
-                                <TableCell className="px-4 py-3 align-top">
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() => toggleRawVisibility(responseRawId)}
-                                    className="h-7 text-xs"
-                                  >
-                                    {visibleRawCells.has(responseRawId) ? "隐藏" : "显示"}
-                                  </Button>
-                                  {visibleRawCells.has(responseRawId) && (
-                                    <div className="mt-2 space-y-1">
-                                      <pre
-                                        className={`text-xs bg-muted p-2 rounded whitespace-pre-wrap break-words ${
-                                          !expandedCells.has(responseRawId) ? "line-clamp-2" : ""
-                                        }`}
-                                      >
-                                        {item.responseRaw}
-                                      </pre>
-                                      {item.responseRaw.length > 100 && (
-                                        <button
-                                          onClick={() => toggleCellExpansion(responseRawId)}
-                                          className="text-xs text-primary hover:underline flex items-center gap-1"
+
+                                {showRawColumns && (
+                                  <TableCell className="px-4 py-3 align-top">
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => toggleRawVisibility(`response-raw-${item.timestamp}`)}
+                                      className="h-7 text-xs"
+                                    >
+                                      {visibleRawCells.has(`response-raw-${item.timestamp}`) ? "隐藏" : "显示"}
+                                    </Button>
+                                    {visibleRawCells.has(`response-raw-${item.timestamp}`) && (
+                                      <div className="mt-2 space-y-1">
+                                        <pre
+                                          className={`text-xs bg-muted p-2 rounded whitespace-pre-wrap break-words ${
+                                            !expandAllHistory && !expandedCells.has(`response-raw-${item.timestamp}`)
+                                              ? "line-clamp-2"
+                                              : ""
+                                          }`}
                                         >
-                                          {expandedCells.has(responseRawId) ? (
-                                            <>
-                                              <ChevronUp className="size-3" />
-                                              收起
-                                            </>
-                                          ) : (
-                                            <>
-                                              <ChevronDown className="size-3" />
-                                              展开
-                                            </>
-                                          )}
-                                        </button>
-                                      )}
-                                    </div>
-                                  )}
-                                </TableCell>
+                                          {item.responseRaw}
+                                        </pre>
+                                        {!expandAllHistory && item.responseRaw.length > 100 && (
+                                          <button
+                                            onClick={() => toggleCellExpansion(`response-raw-${item.timestamp}`)}
+                                            className="text-xs text-primary hover:underline flex items-center gap-1"
+                                          >
+                                            {expandedCells.has(`response-raw-${item.timestamp}`) ? (
+                                              <>
+                                                <ChevronUp className="size-3" />
+                                                收起
+                                              </>
+                                            ) : (
+                                              <>
+                                                <ChevronDown className="size-3" />
+                                                展开
+                                              </>
+                                            )}
+                                          </button>
+                                        )}
+                                      </div>
+                                    )}
+                                  </TableCell>
+                                )}
                                 <TableCell className="px-4 py-3 text-center align-top">
                                   <Button
                                     variant="ghost"
@@ -1161,7 +1585,7 @@ export default function LLMAPITester() {
                             )
                           })}
                         </TableBody>
-                      </table>
+                      </Table>
                     </div>
                   </div>
 
