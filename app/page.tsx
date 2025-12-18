@@ -19,6 +19,8 @@ import {
   StopCircle,
   Download,
   Zap,
+  Activity,
+  Check,
 } from "lucide-react" // Import Copy, Pencil, List, Eye, EyeOff, RotateCcw, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Calendar, Check, Clock, X, Play, StopCircle icons
 
 import { useState, useEffect, useRef } from "react" // Import useRef
@@ -32,6 +34,14 @@ import { Slider } from "@/components/ui/slider"
 import { useToast } from "@/hooks/use-toast"
 import { Toaster } from "@/components/ui/toaster"
 import { TableBody, TableCell, TableHead, TableRow, Table } from "@/components/ui/table" // Import Table components
+
+// Define OpenRouterModel interface
+interface OpenRouterModel {
+  id: string
+  name?: string
+  context?: number // Example property, adjust as needed
+  // Add other properties as per the actual API response
+}
 
 const API_PROVIDERS = [
   {
@@ -71,6 +81,18 @@ const API_PROVIDERS = [
   },
 ]
 
+interface ModelHistoryItem {
+  id: string
+  timestamp: number
+  provider: string
+  model: string
+  apiKey: string
+  baseURL: string
+  apiPath: string
+  status: "idle" | "success" | "error"
+  duration: number | null
+}
+
 interface HistoryItem {
   id: string
   timestamp: number
@@ -80,12 +102,6 @@ interface HistoryItem {
   requestRaw: string
   responseContent: string
   responseRaw: string
-}
-
-interface OpenRouterModel {
-  id: string
-  name?: string
-  context?: string
 }
 
 export default function LLMAPITester() {
@@ -156,6 +172,12 @@ export default function LLMAPITester() {
   const timerRef = useRef<NodeJS.Timeout | null>(null) // Use useRef for timer
   const [isTimerRunning, setIsTimerRunning] = useState(false) // Track if timer is active
   const [responseDuration, setResponseDuration] = useState<number | null>(null)
+  const [isParametersExpanded, setIsParametersExpanded] = useState(true) // Default to expanded
+
+  const [modelHistory, setModelHistory] = useState<ModelHistoryItem[]>([])
+  const [modelHistoryPage, setModelHistoryPage] = useState(1)
+  const modelHistoryPageSize = 5
+  const [visibleApiKeys, setVisibleApiKeys] = useState<Set<string>>(new Set())
 
   const { toast } = useToast()
 
@@ -188,6 +210,8 @@ export default function LLMAPITester() {
       setMaxTokensLimit(settings.maxTokensLimit ?? DEFAULT_VALUES.maxTokensLimit)
       setPageSize(settings.pageSize ?? DEFAULT_VALUES.pageSize)
       setPrompt(settings.prompt ?? DEFAULT_VALUES.prompt) // Load prompt from settings
+      // Load isParametersExpanded state from localStorage if available
+      setIsParametersExpanded(settings.isParametersExpanded ?? true)
     } else {
       // First time load: initialize baseURL and apiPath for default provider
       const defaultProvider = API_PROVIDERS.find((p) => p.id === DEFAULT_VALUES.provider)
@@ -213,6 +237,15 @@ export default function LLMAPITester() {
         setHistory(JSON.parse(oldHistory))
         localStorage.setItem("llm_api_history", oldHistory)
         localStorage.removeItem("llm-api-test-history")
+      }
+    }
+
+    const savedModelHistory = localStorage.getItem("modelHistory")
+    if (savedModelHistory) {
+      try {
+        setModelHistory(JSON.parse(savedModelHistory))
+      } catch (error) {
+        console.error("Failed to load model history:", error)
       }
     }
   }, [])
@@ -242,6 +275,8 @@ export default function LLMAPITester() {
         maxTokensLimit,
         pageSize,
         prompt, // Save prompt
+        // Save isParametersExpanded state
+        isParametersExpanded,
       }),
     )
   }, [
@@ -265,6 +300,8 @@ export default function LLMAPITester() {
     maxTokensLimit,
     pageSize,
     prompt, // Add prompt to dependencies
+    // Add isParametersExpanded to dependencies
+    isParametersExpanded,
   ])
 
   useEffect(() => {
@@ -274,6 +311,10 @@ export default function LLMAPITester() {
   }, [history])
 
   useEffect(() => {
+    localStorage.setItem("modelHistory", JSON.stringify(modelHistory))
+  }, [modelHistory])
+
+  useEffect(() => {
     // Cleanup interval on component unmount
     return () => {
       if (timerRef.current) {
@@ -281,6 +322,29 @@ export default function LLMAPITester() {
       }
     }
   }, [])
+
+  const saveToModelHistory = (status: "idle" | "success" | "error", duration: number | null) => {
+    const newItem: ModelHistoryItem = {
+      id: Date.now().toString(),
+      timestamp: Date.now(),
+      provider,
+      model,
+      apiKey,
+      baseURL,
+      apiPath,
+      status,
+      duration,
+    }
+
+    setModelHistory((prev) => {
+      // Remove existing items with same provider, model, and apiKey
+      const filtered = prev.filter(
+        (item) =>
+          !(item.provider === newItem.provider && item.model === newItem.model && item.apiKey === newItem.apiKey),
+      )
+      return [newItem, ...filtered]
+    })
+  }
 
   const runProbeTest = async () => {
     if (!apiKey || !model || !fullApiPath) return // Added fullApiPath check
@@ -326,6 +390,7 @@ export default function LLMAPITester() {
       if (!contentType?.includes("application/json")) {
         const text = await response.text()
         setProbeStatus("error")
+        saveToModelHistory("error", duration)
         toast({
           variant: "destructive",
           title: "探针测试失败",
@@ -339,6 +404,7 @@ export default function LLMAPITester() {
 
       if (response.ok && data.choices?.[0]?.message) {
         setProbeStatus("success")
+        saveToModelHistory("success", duration)
         toast({
           title: "探针测试成功",
           description: `API 配置正常，响应用时: ${duration}ms`,
@@ -347,6 +413,7 @@ export default function LLMAPITester() {
         })
       } else {
         setProbeStatus("error")
+        saveToModelHistory("error", duration)
         toast({
           variant: "destructive",
           title: "探针测试失败",
@@ -357,6 +424,7 @@ export default function LLMAPITester() {
     } catch (error) {
       setProbeStatus("error")
       setProbeDuration(null)
+      saveToModelHistory("error", null)
       toast({
         variant: "destructive",
         title: "探针测试失败",
@@ -408,6 +476,7 @@ export default function LLMAPITester() {
   const fetchOpenRouterModels = async () => {
     setIsLoadingModels(true)
     try {
+      // Fetching from a placeholder URL, replace with actual API endpoint if available
       const response = await fetch("https://openrouter-free-api.xiechengqi.top/data/openrouter-free-text-to-text.json")
       if (response.ok) {
         const data = await response.json()
@@ -528,7 +597,10 @@ export default function LLMAPITester() {
       )
       setResponseData(formattedResponse)
 
-      const requestContent = [...messages].reverse().map((msg) => `${msg.role}: ${msg.content}`).join("\n") // user first, then system
+      const requestContent = [...messages]
+        .reverse()
+        .map((msg) => `${msg.role}: ${msg.content}`)
+        .join("\n") // user first, then system
       const responseContent =
         parsedResponse?.choices?.[0]?.message?.content ||
         parsedResponse?.content?.[0]?.text ||
@@ -713,6 +785,116 @@ export default function LLMAPITester() {
     localStorage.removeItem("llm_api_history")
   }
 
+  const deleteModelHistoryItem = (id: string) => {
+    setModelHistory((prev) => prev.filter((item) => item.id !== id))
+    toast({
+      title: "记录已删除",
+      duration: 2000,
+    })
+  }
+
+  const toggleApiKeyVisibility = (itemId: string) => {
+    setVisibleApiKeys((prev) => {
+      const newSet = new Set(prev)
+      if (newSet.has(itemId)) {
+        newSet.delete(itemId)
+      } else {
+        newSet.add(itemId)
+      }
+      return newSet
+    })
+  }
+
+  const runHistoryProbeTest = async (item: ModelHistoryItem) => {
+    if (!item.apiKey || !item.model) return
+
+    const fullPath = item.baseURL ? `${item.baseURL}${item.apiPath}` : item.apiPath
+
+    toast({
+      title: "探针测试开始",
+      description: `提供商: ${item.provider}, 模型: ${item.model}`,
+      className: "bg-blue-50 border-blue-200",
+      duration: 3000,
+    })
+
+    try {
+      const startTime = performance.now()
+
+      const requestBody = {
+        model: item.model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: "hello" },
+        ],
+        max_tokens: 100,
+        temperature: 1,
+        top_p: 1,
+        frequency_penalty: 0,
+        presence_penalty: 0,
+      }
+
+      const response = await fetch(fullPath, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${item.apiKey}`,
+        },
+        body: JSON.stringify(requestBody),
+        signal: AbortSignal.timeout(10000),
+      })
+
+      const duration = Math.round(performance.now() - startTime)
+
+      const contentType = response.headers.get("content-type")
+      if (!contentType?.includes("application/json")) {
+        setModelHistory((prev) =>
+          prev.map((h) => (h.id === item.id ? { ...h, status: "error" as const, duration } : h)),
+        )
+        toast({
+          variant: "destructive",
+          title: "探针测试失败",
+          description: `服务器返回非JSON响应 (状态码: ${response.status})`,
+          duration: 3000,
+        })
+        return
+      }
+
+      const data = await response.json()
+
+      if (response.ok && data.choices?.[0]?.message) {
+        setModelHistory((prev) =>
+          prev.map((h) => (h.id === item.id ? { ...h, status: "success" as const, duration } : h)),
+        )
+        toast({
+          title: "探针测试成功",
+          description: `API 配置正常，响应用时: ${duration}ms`,
+          className: "bg-green-50 border-green-200",
+          duration: 3000,
+        })
+      } else {
+        setModelHistory((prev) =>
+          prev.map((h) => (h.id === item.id ? { ...h, status: "error" as const, duration } : h)),
+        )
+        toast({
+          variant: "destructive",
+          title: "探针测试失败",
+          description: data.error?.message || "API 返回异常",
+          duration: 3000,
+        })
+      }
+    } catch (error) {
+      setModelHistory((prev) =>
+        prev.map((h) => (h.id === item.id ? { ...h, status: "error" as const, duration: null } : h)),
+      )
+      toast({
+        variant: "destructive",
+        title: "探针测试失败",
+        description: error instanceof Error ? error.message : "未知错误",
+        duration: 3000,
+      })
+    }
+  }
+
   const exportHistoryToCSV = () => {
     if (history.length === 0) return
 
@@ -895,6 +1077,73 @@ export default function LLMAPITester() {
   // Fixed: Corrected closing tag for Table and removed undeclared variable expandAllHistory
   const expandAllHistory = false // Placeholder to resolve lint error, can be replaced with actual state if needed.
 
+  const applyHistoryItem = (item: ModelHistoryItem) => {
+    setProvider(item.provider)
+    setModel(item.model)
+    setApiKey(item.apiKey)
+    setBaseURL(item.baseURL)
+    setApiPath(item.apiPath)
+
+    toast({
+      title: "配置已应用",
+      description: `已应用 ${item.provider} - ${item.model} 的配置`,
+      className: "bg-blue-50 border-blue-200",
+      duration: 2000,
+    })
+  }
+
+  const clearModelHistory = () => {
+    setModelHistory([])
+    setModelHistoryPage(1)
+    toast({
+      title: "历史记录已清空",
+      duration: 2000,
+    })
+  }
+
+  const exportModelHistoryToCSV = () => {
+    if (modelHistory.length === 0) {
+      toast({
+        variant: "destructive",
+        title: "无数据导出",
+        description: "历史记录为空",
+        duration: 2000,
+      })
+      return
+    }
+
+    const headers = ["时间", "提供商", "模型名", "API Key", "状态", "响应延迟(ms)"]
+    const rows = modelHistory.map((item) => [
+      new Date(item.timestamp).toLocaleString("zh-CN"),
+      item.provider,
+      item.model,
+      item.apiKey.substring(0, 10) + "...",
+      item.status === "success" ? "成功" : item.status === "error" ? "失败" : "未测试",
+      item.duration ? item.duration.toString() : "N/A",
+    ])
+
+    const csvContent = [headers.join(","), ...rows.map((row) => row.map((cell) => `"${cell}"`).join(","))].join("\n")
+
+    const blob = new Blob(["\ufeff" + csvContent], { type: "text/csv;charset=utf-8;" })
+    const link = document.createElement("a")
+    link.href = URL.createObjectURL(blob)
+    link.download = `model-history-${Date.now()}.csv`
+    link.click()
+
+    toast({
+      title: "导出成功",
+      description: `已导出 ${modelHistory.length} 条记录`,
+      className: "bg-green-50 border-green-200",
+      duration: 2000,
+    })
+  }
+
+  const modelHistoryTotalPages = Math.ceil(modelHistory.length / modelHistoryPageSize)
+  const paginatedModelHistory = modelHistory.slice(
+    (modelHistoryPage - 1) * modelHistoryPageSize,
+    modelHistoryPage * modelHistoryPageSize,
+  )
+
   return (
     <div className="min-h-screen bg-background">
       <nav className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -1038,13 +1287,180 @@ export default function LLMAPITester() {
 
       <div className="p-4 md:p-8">
         <div className="max-w-7xl mx-auto space-y-6">
-          {/* Parameters Configuration - Full width */}
           <Card>
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
-                  <CardTitle>参数配置</CardTitle>
-                  <CardDescription>调整 Chat Completion 参数</CardDescription>
+                  <CardTitle>历史模型</CardTitle>
+                  <CardDescription>保存的模型配置和探针测试结果</CardDescription>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={exportModelHistoryToCSV}
+                    disabled={modelHistory.length === 0}
+                  >
+                    <Download className="mr-2 size-4" />
+                    导出CSV
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={clearModelHistory} disabled={modelHistory.length === 0}>
+                    <Trash2 className="mr-2 size-4" />
+                    清空
+                  </Button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {modelHistory.length === 0 ? (
+                <div className="text-center py-8 text-muted-foreground">暂无历史记录</div>
+              ) : (
+                <>
+                  <div className="border rounded-lg overflow-hidden">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="w-[180px]">时间</TableHead>
+                          <TableHead className="w-[120px]">提供商</TableHead>
+                          <TableHead className="w-[200px]">模型名</TableHead>
+                          <TableHead className="w-[150px]">API Key</TableHead>
+                          <TableHead className="w-[150px]">状态</TableHead>
+                          <TableHead className="w-[200px]">操作</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {paginatedModelHistory.map((item) => (
+                          <TableRow key={item.id}>
+                            <TableCell className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap align-top">
+                              {new Date(item.timestamp).toLocaleString("zh-CN", {
+                                month: "2-digit",
+                                day: "2-digit",
+                                hour: "2-digit",
+                                minute: "2-digit",
+                                second: "2-digit",
+                              })}
+                            </TableCell>
+                            <TableCell className="text-sm">
+                              {API_PROVIDERS.find((p) => p.id === item.provider)?.name || item.provider}
+                            </TableCell>
+                            <TableCell className="text-sm font-mono">{item.model}</TableCell>
+                            <TableCell className="text-sm font-mono">
+                              <div className="flex items-center gap-2">
+                                <span className="flex-1">
+                                  {visibleApiKeys.has(item.id) ? item.apiKey : `${item.apiKey.substring(0, 10)}...`}
+                                </span>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => toggleApiKeyVisibility(item.id)}
+                                  className="h-6 w-6 p-0"
+                                  title={visibleApiKeys.has(item.id) ? "隐藏 API Key" : "显示 API Key"}
+                                >
+                                  {visibleApiKeys.has(item.id) ? (
+                                    <EyeOff className="size-3" />
+                                  ) : (
+                                    <Eye className="size-3" />
+                                  )}
+                                </Button>
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex items-center gap-2">
+                                {item.status === "success" && (
+                                  <>
+                                    <div className="size-2 rounded-full bg-green-500" />
+                                    <span className="text-sm text-green-600">{item.duration}ms</span>
+                                  </>
+                                )}
+                                {item.status === "error" && (
+                                  <>
+                                    <div className="size-2 rounded-full bg-red-500" />
+                                    <span className="text-sm text-red-600">失败</span>
+                                  </>
+                                )}
+                                {item.status === "idle" && (
+                                  <>
+                                    <div className="size-2 rounded-full bg-gray-400" />
+                                    <span className="text-sm text-muted-foreground">未测试</span>
+                                  </>
+                                )}
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => runHistoryProbeTest(item)}
+                                  title="探针测试"
+                                >
+                                  <Activity className="size-4" />
+                                </Button>
+                                <Button variant="default" size="sm" onClick={() => applyHistoryItem(item)}>
+                                  <Check className="mr-1 size-3" />
+                                  应用
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => deleteModelHistoryItem(item.id)}
+                                  title="删除"
+                                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                                >
+                                  <Trash2 className="size-4" />
+                                </Button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+
+                  {/* Pagination */}
+                  {modelHistoryTotalPages > 1 && (
+                    <div className="flex items-center justify-between mt-4">
+                      <div className="text-sm text-muted-foreground">
+                        共 {modelHistory.length} 条记录，第 {modelHistoryPage} / {modelHistoryTotalPages} 页
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setModelHistoryPage((p) => Math.max(1, p - 1))}
+                          disabled={modelHistoryPage === 1}
+                        >
+                          <ChevronLeft className="size-4" />
+                        </Button>
+                        <div className="text-sm font-medium">{modelHistoryPage}</div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setModelHistoryPage((p) => Math.min(modelHistoryTotalPages, p + 1))}
+                          disabled={modelHistoryPage === modelHistoryTotalPages}
+                        >
+                          <ChevronRight className="size-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Parameters Configuration - Full width */}
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Button variant="ghost" size="sm" onClick={() => setIsParametersExpanded(!isParametersExpanded)}>
+                    {isParametersExpanded ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
+                  </Button>
+                  <div>
+                    <CardTitle>参数配置</CardTitle>
+                    <CardDescription>调整 Chat Completion 参数</CardDescription>
+                  </div>
                 </div>
                 <div className="flex items-center gap-2">
                   <Button variant="outline" size="sm" onClick={handleResetParameters}>
@@ -1074,229 +1490,233 @@ export default function LLMAPITester() {
                 </div>
               </div>
             </CardHeader>
-            <CardContent className="space-y-6">
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <Label htmlFor="userMessage">用户消息</Label>
-                    <p className="text-xs text-muted-foreground">输入测试用的消息内容</p>
+            {isParametersExpanded && (
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Label htmlFor="userMessage">用户消息</Label>
+                      <p className="text-xs text-muted-foreground">输入测试用的消息内容</p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setIsPromptExpanded(!isPromptExpanded)}
+                    >
+                      {isPromptExpanded ? (
+                        <>
+                          <ChevronUp className="mr-1 h-4 w-4" />
+                          收起
+                        </>
+                      ) : (
+                        <>
+                          <ChevronDown className="mr-1 h-4 w-4" />
+                          展开
+                        </>
+                      )}
+                    </Button>
                   </div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setIsPromptExpanded(!isPromptExpanded)}
-                  >
-                    {isPromptExpanded ? (
-                      <>
-                        <ChevronUp className="mr-1 h-4 w-4" />
-                        收起
-                      </>
-                    ) : (
-                      <>
-                        <ChevronDown className="mr-1 h-4 w-4" />
-                        展开
-                      </>
+                  <Textarea
+                    id="userMessage"
+                    value={userMessage}
+                    onChange={(e) => setUserMessage(e.target.value)}
+                    placeholder="输入你的提示词..."
+                    rows={3}
+                    className={isPromptExpanded ? "" : "max-h-32 overflow-y-auto"}
+                  />
+                </div>
+
+                {/* System Prompt Input */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Label htmlFor="systemPrompt">系统提示词</Label>
+                      <p className="text-xs text-muted-foreground">为 AI 设置角色或行为指令</p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setIsSystemPromptExpanded(!isSystemPromptExpanded)}
+                    >
+                      {isSystemPromptExpanded ? (
+                        <>
+                          <ChevronUp className="mr-1 h-4 w-4" />
+                          收起
+                        </>
+                      ) : (
+                        <>
+                          <ChevronDown className="mr-1 h-4 w-4" />
+                          展开
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                  <Textarea
+                    id="systemPrompt"
+                    value={systemPrompt}
+                    onChange={(e) => setSystemPrompt(e.target.value)}
+                    placeholder="例如: 你是一个乐于助人的助手。"
+                    rows={2}
+                    className={isSystemPromptExpanded ? "" : "max-h-32 overflow-y-auto"}
+                  />
+                </div>
+
+                <div className="space-y-4 pt-4">
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label>定时配置</Label>
+                      <p className="text-xs text-muted-foreground">设置自动定时执行测试</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-6">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="timerEnabled"
+                        checked={timerEnabled}
+                        onChange={(e) => {
+                          setTimerEnabled(e.target.checked)
+                          if (!e.target.checked && isTimerRunning) {
+                            stopTimer()
+                          }
+                        }}
+                        className="h-4 w-4 rounded border-input bg-background accent-primary cursor-pointer"
+                      />
+                      <Label htmlFor="timerEnabled" className="cursor-pointer font-normal">
+                        启用定时执行
+                      </Label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Label htmlFor="timerInterval" className="text-sm text-muted-foreground whitespace-nowrap">
+                        间隔时间
+                      </Label>
+                      <Input
+                        id="timerInterval"
+                        type="number"
+                        value={timerInterval}
+                        onChange={(e) => setTimerInterval(Math.max(1, Number(e.target.value)))}
+                        className="w-20 h-8"
+                        min={1}
+                        disabled={!timerEnabled} // Disable input if timer is not enabled
+                      />
+                      <span className="text-sm text-muted-foreground">秒</span>
+                    </div>
+                    {isTimerRunning && (
+                      <span className="text-xs text-muted-foreground bg-primary/10 px-2 py-1 rounded">
+                        定时运行中 (每 {timerInterval} 秒)
+                      </span>
                     )}
-                  </Button>
+                  </div>
                 </div>
-                <Textarea
-                  id="userMessage"
-                  value={userMessage}
-                  onChange={(e) => setUserMessage(e.target.value)}
-                  placeholder="输入你的提示词..."
-                  rows={3}
-                  className={isPromptExpanded ? "" : "max-h-32 overflow-y-auto"}
-                />
-              </div>
 
-              {/* System Prompt Input */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <Label htmlFor="systemPrompt">系统提示词</Label>
-                    <p className="text-xs text-muted-foreground">为 AI 设置角色或行为指令</p>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label htmlFor="maxTokens">Max Tokens</Label>
+                      <p className="text-xs text-muted-foreground">最大生成令牌数量（范围: 1 - {maxTokensLimit}）</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium">{maxTokens}</span>
+                      <span className="text-sm font-medium">/</span>
+                      <Input
+                        type="number"
+                        value={maxTokensLimit}
+                        onChange={(e) => {
+                          const newLimit = Math.max(1, Number(e.target.value))
+                          setMaxTokensLimit(newLimit)
+                          if (maxTokens > newLimit) {
+                            setMaxTokens(newLimit)
+                          }
+                        }}
+                        className="w-20 h-8 text-xs"
+                        min={1}
+                      />
+                    </div>
                   </div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setIsSystemPromptExpanded(!isSystemPromptExpanded)}
-                  >
-                    {isSystemPromptExpanded ? (
-                      <>
-                        <ChevronUp className="mr-1 h-4 w-4" />
-                        收起
-                      </>
-                    ) : (
-                      <>
-                        <ChevronDown className="mr-1 h-4 w-4" />
-                        展开
-                      </>
-                    )}
-                  </Button>
+                  <Slider
+                    id="maxTokens"
+                    min={1}
+                    max={maxTokensLimit}
+                    step={1}
+                    value={[maxTokens]}
+                    onValueChange={(v) => setMaxTokens(v[0])}
+                  />
                 </div>
-                <Textarea
-                  id="systemPrompt"
-                  value={systemPrompt}
-                  onChange={(e) => setSystemPrompt(e.target.value)}
-                  placeholder="例如: 你是一个乐于助人的助手。"
-                  rows={2}
-                  className={isSystemPromptExpanded ? "" : "max-h-32 overflow-y-auto"}
-                />
-              </div>
 
-              <div className="space-y-4 pt-4">
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <Label>定时配置</Label>
-                    <p className="text-xs text-muted-foreground">设置自动定时执行测试</p>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label htmlFor="temperature">Temperature</Label>
+                      <p className="text-xs text-muted-foreground">控制输出随机性，值越高越随机（范围: 0.0 - 2.0）</p>
+                    </div>
+                    <span className="text-sm font-medium">{temperature?.toFixed(2) ?? "1.00"}</span>
                   </div>
+                  <Slider
+                    id="temperature"
+                    min={0}
+                    max={2}
+                    step={0.01}
+                    value={[temperature]}
+                    onValueChange={(v) => setTemperature(v[0])}
+                  />
                 </div>
-                <div className="flex items-center gap-6">
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      id="timerEnabled"
-                      checked={timerEnabled}
-                      onChange={(e) => {
-                        setTimerEnabled(e.target.checked)
-                        if (!e.target.checked && isTimerRunning) {
-                          stopTimer()
-                        }
-                      }}
-                      className="h-4 w-4 rounded border-input bg-background accent-primary cursor-pointer"
-                    />
-                    <Label htmlFor="timerEnabled" className="cursor-pointer font-normal">
-                      启用定时执行
-                    </Label>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Label htmlFor="timerInterval" className="text-sm text-muted-foreground whitespace-nowrap">
-                      间隔时间
-                    </Label>
-                    <Input
-                      id="timerInterval"
-                      type="number"
-                      value={timerInterval}
-                      onChange={(e) => setTimerInterval(Math.max(1, Number(e.target.value)))}
-                      className="w-20 h-8"
-                      min={1}
-                      disabled={!timerEnabled} // Disable input if timer is not enabled
-                    />
-                    <span className="text-sm text-muted-foreground">秒</span>
-                  </div>
-                  {isTimerRunning && (
-                    <span className="text-xs text-muted-foreground bg-primary/10 px-2 py-1 rounded">
-                      定时运行中 (每 {timerInterval} 秒)
-                    </span>
-                  )}
-                </div>
-              </div>
 
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <Label htmlFor="maxTokens">Max Tokens</Label>
-                    <p className="text-xs text-muted-foreground">最大生成令牌数量（范围: 1 - {maxTokensLimit}）</p>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label htmlFor="topP">Top P</Label>
+                      <p className="text-xs text-muted-foreground">核采样，控制输出多样性（范围: 0.0 - 1.0）</p>
+                    </div>
+                    <span className="text-sm font-medium">{topP?.toFixed(2) ?? "1.00"}</span>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium">{maxTokens}</span>
-                    <span className="text-sm font-medium">/</span>
-                    <Input
-                      type="number"
-                      value={maxTokensLimit}
-                      onChange={(e) => {
-                        const newLimit = Math.max(1, Number(e.target.value))
-                        setMaxTokensLimit(newLimit)
-                        if (maxTokens > newLimit) {
-                          setMaxTokens(newLimit)
-                        }
-                      }}
-                      className="w-20 h-8 text-xs"
-                      min={1}
-                    />
-                  </div>
+                  <Slider id="topP" min={0} max={1} step={0.01} value={[topP]} onValueChange={(v) => setTopP(v[0])} />
                 </div>
-                <Slider
-                  id="maxTokens"
-                  min={1}
-                  max={maxTokensLimit}
-                  step={1}
-                  value={[maxTokens]}
-                  onValueChange={(v) => setMaxTokens(v[0])}
-                />
-              </div>
 
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <Label htmlFor="temperature">Temperature</Label>
-                    <p className="text-xs text-muted-foreground">控制输出随机性，值越高越随机（范围: 0.0 - 2.0）</p>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label htmlFor="frequencyPenalty">Frequency Penalty</Label>
+                      <p className="text-xs text-muted-foreground">
+                        降低重复词频率，值越大惩罚越强（范围: -2.0 - 2.0）
+                      </p>
+                    </div>
+                    <span className="text-sm font-medium">{frequencyPenalty?.toFixed(2) ?? "0.00"}</span>
                   </div>
-                  <span className="text-sm font-medium">{temperature?.toFixed(2) ?? "1.00"}</span>
+                  <Slider
+                    id="frequencyPenalty"
+                    min={-2}
+                    max={2}
+                    step={0.01}
+                    value={[frequencyPenalty]}
+                    onValueChange={(v) => setFrequencyPenalty(v[0])}
+                  />
                 </div>
-                <Slider
-                  id="temperature"
-                  min={0}
-                  max={2}
-                  step={0.01}
-                  value={[temperature]}
-                  onValueChange={(v) => setTemperature(v[0])}
-                />
-              </div>
 
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <Label htmlFor="topP">Top P</Label>
-                    <p className="text-xs text-muted-foreground">核采样，控制输出多样性（范围: 0.0 - 1.0）</p>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <Label htmlFor="presencePenalty">Presence Penalty</Label>
+                      <p className="text-xs text-muted-foreground">
+                        鼓励谈论新话题，值越大越倾向新内容（范围: -2.0 - 2.0）
+                      </p>
+                    </div>
+                    <span className="text-sm font-medium">{presencePenalty?.toFixed(2) ?? "0.00"}</span>
                   </div>
-                  <span className="text-sm font-medium">{topP?.toFixed(2) ?? "1.00"}</span>
+                  <Slider
+                    id="presencePenalty"
+                    min={-2}
+                    max={2}
+                    step={0.01}
+                    value={[presencePenalty]}
+                    onValueChange={(v) => setPresencePenalty(v[0])}
+                  />
                 </div>
-                <Slider id="topP" min={0} max={1} step={0.01} value={[topP]} onValueChange={(v) => setTopP(v[0])} />
-              </div>
 
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <Label htmlFor="frequencyPenalty">Frequency Penalty</Label>
-                    <p className="text-xs text-muted-foreground">降低重复词频率，值越大惩罚越强（范围: -2.0 - 2.0）</p>
-                  </div>
-                  <span className="text-sm font-medium">{frequencyPenalty?.toFixed(2) ?? "0.00"}</span>
-                </div>
-                <Slider
-                  id="frequencyPenalty"
-                  min={-2}
-                  max={2}
-                  step={0.01}
-                  value={[frequencyPenalty]}
-                  onValueChange={(v) => setFrequencyPenalty(v[0])}
-                />
-              </div>
-
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <Label htmlFor="presencePenalty">Presence Penalty</Label>
-                    <p className="text-xs text-muted-foreground">
-                      鼓励谈论新话题，值越大越倾向新内容（范围: -2.0 - 2.0）
-                    </p>
-                  </div>
-                  <span className="text-sm font-medium">{presencePenalty?.toFixed(2) ?? "0.00"}</span>
-                </div>
-                <Slider
-                  id="presencePenalty"
-                  min={-2}
-                  max={2}
-                  step={0.01}
-                  value={[presencePenalty]}
-                  onValueChange={(v) => setPresencePenalty(v[0])}
-                />
-              </div>
-
-              {error && <div className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{error}</div>}
-            </CardContent>
+                {error && <div className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{error}</div>}
+              </CardContent>
+            )}
           </Card>
 
           {/* History - Full width table format */}
@@ -1493,15 +1913,15 @@ export default function LLMAPITester() {
                                       )}
                                     </div>
                                     {(() => {
-                                      const hasCodeBlock = item.responseContent.includes("```");
+                                      const hasCodeBlock = item.responseContent.includes("```")
                                       const codeBlockLines = hasCodeBlock
-                                        ? item.responseContent
+                                        ? (item.responseContent
                                             .split("```")
                                             .filter((_, i) => i % 2 === 1)[0]
-                                            ?.split("\n")?.length ?? 0
-                                        : 0;
+                                            ?.split("\n")?.length ?? 0)
+                                        : 0
                                       const shouldShowToggle =
-                                        item.responseContent.length > 100 || (hasCodeBlock && codeBlockLines > 3);
+                                        item.responseContent.length > 100 || (hasCodeBlock && codeBlockLines > 3)
                                       return (
                                         !expandResponseContent &&
                                         shouldShowToggle && (
