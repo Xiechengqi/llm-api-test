@@ -54,19 +54,23 @@ declare global {
 // For the purpose of this merge, we'll assume it's correctly defined or imported elsewhere.
 // If it's expected to be a new function, it needs to be implemented.
 const verifyFilePermission = async (handle: FileSystemFileHandle): Promise<boolean> => {
-  // Placeholder implementation. Replace with actual logic if this is a new function.
-  // This is often part of the File System Access API polyfill or a custom implementation.
   try {
     if (handle.queryPermission) {
-      // Check if the method exists (modern browsers)
-      const status = await handle.queryPermission({ mode: "readwrite" })
-      return status === "granted"
+      // Check current permission status
+      const status = await handle.queryPermission({ mode: "read" })
+
+      if (status === "granted") {
+        return true
+      }
+
+      // If not granted, request permission
+      const requestStatus = await handle.requestPermission({ mode: "read" })
+      return requestStatus === "granted"
     }
-    // Fallback for environments where queryPermission might not be available but granted is implied
-    // This is a simplified assumption. Real-world scenarios might need more complex checks.
-    return true // Assume granted if queryPermission is not available or if it implies granted by default
+    // Fallback for environments where queryPermission might not be available
+    return true
   } catch (error) {
-    console.error("Error checking file permission:", error)
+    console.error("[v0] Error checking/requesting file permission:", error)
     return false
   }
 }
@@ -265,6 +269,7 @@ export default function LLMAPITester() {
   const DEFAULT_VALUES = {
     provider: "openrouter" as const,
     model: "",
+    apiKey: "", // Added default for apiKey
     baseURL: "https://openrouter.ai",
     apiPath: "/api/v1/chat/completions",
     systemPrompt: "You are a helpful assistant.",
