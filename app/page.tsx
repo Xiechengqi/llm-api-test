@@ -22,6 +22,7 @@ import {
   Activity,
   Check,
   FileText,
+  Upload,
 } from "lucide-react" // Import Copy, Pencil, List, Eye, EyeOff, RotateCcw, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Calendar, Check, Clock, X, Play, StopCircle icons
 
 import { useState, useEffect, useRef } from "react" // Import useRef
@@ -35,6 +36,161 @@ import { Slider } from "@/components/ui/slider"
 import { useToast } from "@/hooks/use-toast"
 import { Toaster } from "@/components/ui/toaster"
 import { TableBody, TableCell, TableHead, TableRow, Table } from "@/components/ui/table" // Import Table components
+
+const DB_NAME = "llm-api-tester-db"
+const DB_VERSION = 1
+const STORE_NAME = "fileHandles"
+
+// Declare verifyFilePermission here if it's expected to be globally available or imported elsewhere
+declare global {
+  interface Window {
+    // Define verifyFilePermission if it's a global function attached to window
+    verifyFilePermission?: (handle: FileSystemFileHandle) => Promise<boolean>
+  }
+}
+
+// Assume verifyFilePermission is available globally or imported
+// If it's a locally defined function, it should be declared above or imported.
+// For the purpose of this merge, we'll assume it's correctly defined or imported elsewhere.
+// If it's expected to be a new function, it needs to be implemented.
+const verifyFilePermission = async (handle: FileSystemFileHandle): Promise<boolean> => {
+  // Placeholder implementation. Replace with actual logic if this is a new function.
+  // This is often part of the File System Access API polyfill or a custom implementation.
+  try {
+    if (handle.queryPermission) {
+      // Check if the method exists (modern browsers)
+      const status = await handle.queryPermission({ mode: "readwrite" })
+      return status === "granted"
+    }
+    // Fallback for environments where queryPermission might not be available but granted is implied
+    // This is a simplified assumption. Real-world scenarios might need more complex checks.
+    return true // Assume granted if queryPermission is not available or if it implies granted by default
+  } catch (error) {
+    console.error("Error checking file permission:", error)
+    return false
+  }
+}
+
+const openDB = (): Promise<IDBDatabase> => {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION)
+    request.onerror = () => {
+      console.log("[v0] IndexedDB open error:", request.error)
+      reject(request.error)
+    }
+    request.onsuccess = () => {
+      console.log("[v0] IndexedDB opened successfully")
+      resolve(request.result)
+    }
+    request.onupgradeneeded = (event) => {
+      console.log("[v0] IndexedDB upgrade needed, creating object store")
+      const db = (event.target as IDBOpenDBRequest).result
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME)
+      }
+    }
+  })
+}
+
+const saveFileHandle = async (key: string, handle: FileSystemFileHandle): Promise<boolean> => {
+  console.log("[v0] saveFileHandle called with key:", key, "handle:", handle)
+  try {
+    const db = await openDB()
+    console.log("[v0] DB opened for saving, starting transaction...")
+
+    return new Promise((resolve) => {
+      const tx = db.transaction(STORE_NAME, "readwrite")
+      const store = tx.objectStore(STORE_NAME)
+
+      console.log("[v0] Putting handle into store...")
+      const request = store.put(handle, key)
+
+      request.onerror = (e) => {
+        console.log("[v0] Put request error:", request.error, e)
+      }
+
+      request.onsuccess = () => {
+        console.log("[v0] Put request success for:", key)
+      }
+
+      // Wait for transaction to complete, not just the put request
+      tx.oncomplete = () => {
+        console.log("[v0] Transaction completed successfully for:", key)
+        db.close()
+        resolve(true)
+      }
+
+      tx.onerror = (e) => {
+        console.log("[v0] Transaction error:", tx.error, e)
+        db.close()
+        resolve(false)
+      }
+
+      tx.onabort = (e) => {
+        console.log("[v0] Transaction aborted:", tx.error, e)
+        db.close()
+        resolve(false)
+      }
+    })
+  } catch (error) {
+    console.log("[v0] Error in saveFileHandle:", error)
+    return false
+  }
+}
+
+const getFileHandle = async (key: string): Promise<FileSystemFileHandle | null> => {
+  console.log("[v0] getFileHandle called with key:", key)
+  try {
+    const db = await openDB()
+    return new Promise((resolve) => {
+      const tx = db.transaction(STORE_NAME, "readonly")
+      const store = tx.objectStore(STORE_NAME)
+      const request = store.get(key)
+
+      request.onerror = () => {
+        console.log("[v0] Failed to get file handle:", request.error)
+        db.close()
+        resolve(null)
+      }
+
+      request.onsuccess = () => {
+        const handle = request.result || null
+        console.log("[v0] Got file handle from IndexedDB:", key, handle ? "found" : "not found")
+        db.close()
+        resolve(handle)
+      }
+    })
+  } catch (error) {
+    console.log("[v0] Error in getFileHandle:", error)
+    return null
+  }
+}
+
+const deleteFileHandle = async (key: string): Promise<void> => {
+  console.log("[v0] deleteFileHandle called with key:", key)
+  try {
+    const db = await openDB()
+    return new Promise((resolve) => {
+      const tx = db.transaction(STORE_NAME, "readwrite")
+      const store = tx.objectStore(STORE_NAME)
+      const request = store.delete(key)
+
+      tx.oncomplete = () => {
+        console.log("[v0] Delete transaction completed for:", key)
+        db.close()
+        resolve()
+      }
+
+      tx.onerror = () => {
+        console.log("[v0] Delete transaction error:", tx.error)
+        db.close()
+        resolve()
+      }
+    })
+  } catch (error) {
+    console.log("[v0] Failed to delete file handle from IndexedDB:", error)
+  }
+}
 
 // Define OpenRouterModel interface
 interface OpenRouterModel {
@@ -117,6 +273,8 @@ export default function LLMAPITester() {
     enablePromptFile: false, // Add enablePromptFile state with default false
     systemPromptFilePath: "",
     enableSystemPromptFile: false,
+    autoReloadPrompt: false,
+    autoReloadSystemPrompt: false,
     maxTokens: 4096,
     temperature: 1.0,
     topP: 1.0,
@@ -161,14 +319,22 @@ export default function LLMAPITester() {
   const [userMessage, setUserMessage] = useState(DEFAULT_VALUES.userMessage) // Added userMessage state
   const [promptFilePath, setPromptFilePath] = useState(DEFAULT_VALUES.promptFilePath)
   const [enablePromptFile, setEnablePromptFile] = useState(DEFAULT_VALUES.enablePromptFile) // Add enablePromptFile state
+  const [isPromptFromLocalFile, setIsPromptFromLocalFile] = useState(false)
+  const promptFileHandleRef = useRef<FileSystemFileHandle | null>(null)
 
   const [loadedPromptContent, setLoadedPromptContent] = useState("")
   const [isExternalPromptExpanded, setIsExternalPromptExpanded] = useState(false)
 
   const [systemPromptFilePath, setSystemPromptFilePath] = useState(DEFAULT_VALUES.systemPromptFilePath)
   const [enableSystemPromptFile, setEnableSystemPromptFile] = useState(DEFAULT_VALUES.enableSystemPromptFile)
+  const [isSystemPromptFromLocalFile, setIsSystemPromptFromLocalFile] = useState(false)
+  const systemPromptFileHandleRef = useRef<FileSystemFileHandle | null>(null)
+
   const [loadedSystemPromptContent, setLoadedSystemPromptContent] = useState("")
   const [isExternalSystemPromptExpanded, setIsExternalSystemPromptExpanded] = useState(false)
+
+  const [autoReloadPrompt, setAutoReloadPrompt] = useState(DEFAULT_VALUES.autoReloadPrompt)
+  const [autoReloadSystemPrompt, setAutoReloadSystemPrompt] = useState(DEFAULT_VALUES.autoReloadSystemPrompt)
 
   const [history, setHistory] = useState<HistoryItem[]>([])
   const [pageSize, setPageSize] = useState(DEFAULT_VALUES.pageSize)
@@ -200,7 +366,7 @@ export default function LLMAPITester() {
   const unifiedEndpoint = baseURL.endsWith("/") ? baseURL.slice(0, -1) : baseURL // Remove trailing slash
   const fullApiPath = `${unifiedEndpoint}${apiPath}`
 
-  // Use a single useEffect for loading from localStorage
+  // Use a single for loading from localStorage
   useEffect(() => {
     const saved = localStorage.getItem("llm-api-test-settings")
     if (saved) {
@@ -216,6 +382,8 @@ export default function LLMAPITester() {
       setEnablePromptFile(settings.enablePromptFile ?? DEFAULT_VALUES.enablePromptFile) // Load enablePromptFile state
       setSystemPromptFilePath(settings.systemPromptFilePath ?? DEFAULT_VALUES.systemPromptFilePath)
       setEnableSystemPromptFile(settings.enableSystemPromptFile ?? DEFAULT_VALUES.enableSystemPromptFile)
+      setAutoReloadPrompt(settings.autoReloadPrompt ?? DEFAULT_VALUES.autoReloadPrompt)
+      setAutoReloadSystemPrompt(settings.autoReloadSystemPrompt ?? DEFAULT_VALUES.autoReloadSystemPrompt)
       setMaxTokens(settings.maxTokens ?? DEFAULT_VALUES.maxTokens)
       setTemperature(settings.temperature ?? DEFAULT_VALUES.temperature)
       setTopP(settings.topP ?? DEFAULT_VALUES.topP)
@@ -231,6 +399,72 @@ export default function LLMAPITester() {
       setPrompt(settings.prompt ?? DEFAULT_VALUES.prompt) // Load prompt from settings
       // Load isParametersExpanded state from localStorage if available
       setIsParametersExpanded(settings.isParametersExpanded ?? true)
+
+      // Load local file state if settings exist
+      setIsPromptFromLocalFile(settings.isPromptFromLocalFile ?? false)
+      setIsSystemPromptFromLocalFile(settings.isSystemPromptFromLocalFile ?? false)
+
+      const restoreFileHandlesSync = async () => {
+        // Use settings values directly instead of state (which hasn't updated yet)
+        const savedIsPromptFromLocalFile = settings.isPromptFromLocalFile ?? false
+        const savedPromptFilePath = settings.promptFilePath ?? ""
+        const savedIsSystemPromptFromLocalFile = settings.isSystemPromptFromLocalFile ?? false
+        const savedSystemPromptFilePath = settings.systemPromptFilePath ?? ""
+
+        // Restore prompt file handle
+        if (savedIsPromptFromLocalFile && savedPromptFilePath) {
+          const handle = await getFileHandle("promptFileHandle")
+          if (handle) {
+            promptFileHandleRef.current = handle
+            console.log("[v0] Restored prompt file handle from IndexedDB")
+
+            // Try to verify permission and reload content
+            const hasPermission = await verifyFilePermission(handle)
+            if (hasPermission) {
+              try {
+                const file = await handle.getFile()
+                const content = await file.text()
+                setLoadedPromptContent(content)
+                console.log("[v0] Auto-loaded prompt content after restoring handle")
+              } catch (error) {
+                console.log("[v0] Failed to auto-load prompt content:", error)
+              }
+            } else {
+              console.log("[v0] Permission not granted for prompt file, will request on next reload")
+            }
+          } else {
+            console.log("[v0] No prompt file handle found in IndexedDB")
+          }
+        }
+
+        // Restore system prompt file handle
+        if (savedIsSystemPromptFromLocalFile && savedSystemPromptFilePath) {
+          const handle = await getFileHandle("systemPromptFileHandle")
+          if (handle) {
+            systemPromptFileHandleRef.current = handle
+            console.log("[v0] Restored system prompt file handle from IndexedDB")
+
+            // Try to verify permission and reload content
+            const hasPermission = await verifyFilePermission(handle)
+            if (hasPermission) {
+              try {
+                const file = await handle.getFile()
+                const content = await file.text()
+                setLoadedSystemPromptContent(content)
+                console.log("[v0] Auto-loaded system prompt content after restoring handle")
+              } catch (error) {
+                console.log("[v0] Failed to auto-load system prompt content:", error)
+              }
+            } else {
+              console.log("[v0] Permission not granted for system prompt file, will request on next reload")
+            }
+          } else {
+            console.log("[v0] No system prompt file handle found in IndexedDB")
+          }
+        }
+      }
+
+      restoreFileHandlesSync()
     } else {
       // First time load: initialize baseURL and apiPath for default provider
       const defaultProvider = API_PROVIDERS.find((p) => p.id === DEFAULT_VALUES.provider)
@@ -269,39 +503,40 @@ export default function LLMAPITester() {
     }
   }, [])
 
-  // Save settings
+  // Save settings to localStorage whenever they change
   useEffect(() => {
-    localStorage.setItem(
-      "llm-api-test-settings",
-      JSON.stringify({
-        provider,
-        model,
-        apiKey,
-        baseURL,
-        apiPath,
-        systemPrompt,
-        userMessage,
-        promptFilePath,
-        enablePromptFile, // Save enablePromptFile state
-        systemPromptFilePath,
-        enableSystemPromptFile,
-        maxTokens,
-        temperature,
-        topP,
-        frequencyPenalty,
-        presencePenalty,
-        showRawColumns,
-        expandRequestContent,
-        expandResponseContent,
-        timerEnabled,
-        timerInterval,
-        maxTokensLimit,
-        pageSize,
-        prompt, // Save prompt
-        // Save isParametersExpanded state
-        isParametersExpanded,
-      }),
-    )
+    const settings = {
+      provider,
+      model,
+      apiKey,
+      baseURL,
+      apiPath,
+      systemPrompt,
+      userMessage,
+      promptFilePath,
+      enablePromptFile,
+      systemPromptFilePath,
+      enableSystemPromptFile,
+      autoReloadPrompt,
+      autoReloadSystemPrompt,
+      maxTokens,
+      temperature,
+      topP,
+      frequencyPenalty,
+      presencePenalty,
+      showRawColumns,
+      expandRequestContent,
+      expandResponseContent,
+      timerEnabled,
+      timerInterval,
+      maxTokensLimit,
+      pageSize,
+      prompt,
+      isParametersExpanded,
+      isPromptFromLocalFile,
+      isSystemPromptFromLocalFile,
+    }
+    localStorage.setItem("llm-api-test-settings", JSON.stringify(settings))
   }, [
     provider,
     model,
@@ -314,6 +549,8 @@ export default function LLMAPITester() {
     enablePromptFile,
     systemPromptFilePath,
     enableSystemPromptFile,
+    autoReloadPrompt,
+    autoReloadSystemPrompt,
     maxTokens,
     temperature,
     topP,
@@ -328,6 +565,8 @@ export default function LLMAPITester() {
     pageSize,
     prompt,
     isParametersExpanded,
+    isPromptFromLocalFile,
+    isSystemPromptFromLocalFile,
   ])
 
   useEffect(() => {
@@ -399,35 +638,206 @@ export default function LLMAPITester() {
     }
   }
 
+  const handleLocalFileSelect = async (type: "prompt" | "systemPrompt") => {
+    console.log("[v0] handleLocalFileSelect called with type:", type)
+    console.log("[v0] enablePromptFile:", enablePromptFile, "enableSystemPromptFile:", enableSystemPromptFile)
+
+    const isInIframe = window.self !== window.top
+
+    try {
+      // Check if File System Access API is supported and not in iframe
+      if ("showOpenFilePicker" in window && !isInIframe) {
+        console.log("[v0] Using File System Access API")
+        const [fileHandle] = await (window as any).showOpenFilePicker({
+          types: [
+            {
+              description: "Text Files",
+              accept: {
+                "text/plain": [".txt"],
+                "text/markdown": [".md"],
+              },
+            },
+          ],
+          multiple: false,
+        })
+
+        const file = await fileHandle.getFile()
+        const content = await file.text()
+        console.log("[v0] File loaded successfully:", file.name, "Content length:", content.length)
+
+        if (type === "prompt") {
+          promptFileHandleRef.current = fileHandle
+          const saved = await saveFileHandle("promptFileHandle", fileHandle)
+          console.log("[v0] Prompt file handle save result:", saved)
+          setIsPromptFromLocalFile(true)
+          setLoadedPromptContent(content)
+          setPromptFilePath(file.name)
+          toast({
+            title: "文件加载成功",
+            description: `已加载本地文件: ${file.name}`,
+          })
+          return content
+        } else {
+          systemPromptFileHandleRef.current = fileHandle
+          const saved = await saveFileHandle("systemPromptFileHandle", fileHandle)
+          console.log("[v0] System prompt file handle save result:", saved)
+          setIsSystemPromptFromLocalFile(true)
+          setLoadedSystemPromptContent(content)
+          setSystemPromptFilePath(file.name)
+          toast({
+            title: "文件加载成功",
+            description: `已加载本地文件: ${file.name}`,
+          })
+          return content
+        }
+      }
+    } catch (error) {
+      console.log("[v0] File System Access API failed, falling back to input method:", error)
+      // Fall through to fallback method
+    }
+
+    console.log("[v0] Using fallback file input method")
+    return new Promise<string | null>((resolve) => {
+      const input = document.createElement("input")
+      input.type = "file"
+      input.accept = ".txt,.md"
+      input.onchange = async (e: any) => {
+        const file = e.target.files?.[0]
+        if (file) {
+          console.log("[v0] Fallback file selected:", file.name)
+          const content = await file.text()
+          if (type === "prompt") {
+            promptFileHandleRef.current = null
+            setIsPromptFromLocalFile(true)
+            setLoadedPromptContent(content)
+            setPromptFilePath(file.name)
+            toast({
+              title: "文件加载成功",
+              description: `已加载本地文件: ${file.name}`,
+            })
+            resolve(content)
+          } else {
+            systemPromptFileHandleRef.current = null
+            setIsSystemPromptFromLocalFile(true)
+            setLoadedSystemPromptContent(content)
+            setSystemPromptFilePath(file.name)
+            toast({
+              title: "文件加载成功",
+              description: `已加载本地文件: ${file.name}`,
+            })
+            resolve(content)
+          }
+        } else {
+          console.log("[v0] No file selected in fallback method")
+          resolve(null)
+        }
+      }
+      input.click()
+    })
+  }
+
+  const reloadLocalFile = async (type: "prompt" | "systemPrompt"): Promise<string | null> => {
+    const fileHandleRef = type === "prompt" ? promptFileHandleRef : systemPromptFileHandleRef
+    const setContent = type === "prompt" ? setLoadedPromptContent : setLoadedSystemPromptContent
+    const handleKey = type === "prompt" ? "promptFileHandle" : "systemPromptFileHandle"
+
+    console.log(`[v0] reloadLocalFile called for ${type}`)
+    console.log(`[v0] Current ref handle:`, fileHandleRef.current ? "exists" : "null")
+
+    // Try to get handle from ref first, then from IndexedDB
+    let handle = fileHandleRef.current
+    if (!handle) {
+      console.log(`[v0] Attempting to restore ${type} handle from IndexedDB`)
+      handle = await getFileHandle(handleKey)
+      if (handle) {
+        fileHandleRef.current = handle
+        console.log(`[v0] Restored ${type} file handle from IndexedDB successfully`)
+      } else {
+        console.log(`[v0] No ${type} handle found in IndexedDB`)
+      }
+    }
+
+    // If we have a valid file handle, verify permission and use it
+    if (handle) {
+      console.log(`[v0] Have handle for ${type}, verifying permission...`)
+      try {
+        const hasPermission = await verifyFilePermission(handle)
+        console.log(`[v0] Permission result for ${type}:`, hasPermission)
+
+        if (hasPermission) {
+          const file = await handle.getFile()
+          const content = await file.text()
+          setContent(content)
+          console.log(`[v0] Reloaded ${type} from file handle with permission, content length:`, content.length)
+          return content
+        } else {
+          console.log(`[v0] Permission denied for ${type} file handle`)
+          // Just return null and let the caller handle it
+        }
+      } catch (error) {
+        console.log(`[v0] Failed to reload from file handle:`, error)
+        // File handle is no longer valid, need to re-select
+        fileHandleRef.current = null
+        await deleteFileHandle(handleKey)
+      }
+    }
+
+    // File handle is missing or invalid, prompt user to re-select
+    console.log(`[v0] File handle missing for ${type}, prompting user to re-select`)
+    toast({
+      title: "需要重新选择文件",
+      description: "请点击确认授权文件访问，或重新选择文件。",
+    })
+
+    // Automatically open file picker
+    const content = await handleLocalFileSelect(type)
+    return content
+  }
+
+  const isHttpUrl = (path: string) => {
+    return path.startsWith("http://") || path.startsWith("https://")
+  }
+
   useEffect(() => {
-    if (enablePromptFile && promptFilePath) {
+    if (enablePromptFile && promptFilePath && isHttpUrl(promptFilePath) && !isPromptFromLocalFile) {
       readLocalFile(promptFilePath)
         .then((content) => {
-          setLoadedPromptContent(content)
+          setLoadedPromptContent(content || "")
         })
         .catch((error) => {
           console.error("Failed to load prompt file:", error)
           setLoadedPromptContent("")
         })
-    } else {
+    } else if (!enablePromptFile) {
       setLoadedPromptContent("")
+      setIsPromptFromLocalFile(false)
+      promptFileHandleRef.current = null
+      deleteFileHandle("promptFileHandle")
     }
-  }, [enablePromptFile, promptFilePath])
+  }, [enablePromptFile, promptFilePath, isPromptFromLocalFile])
 
   useEffect(() => {
-    if (enableSystemPromptFile && systemPromptFilePath) {
+    if (
+      enableSystemPromptFile &&
+      systemPromptFilePath &&
+      isHttpUrl(systemPromptFilePath) &&
+      !isSystemPromptFromLocalFile
+    ) {
       readLocalFile(systemPromptFilePath)
         .then((content) => {
-          setLoadedSystemPromptContent(content)
+          setLoadedSystemPromptContent(content || "")
         })
         .catch((error) => {
           console.error("Failed to load system prompt file:", error)
           setLoadedSystemPromptContent("")
         })
-    } else {
+    } else if (!enableSystemPromptFile) {
       setLoadedSystemPromptContent("")
+      setIsSystemPromptFromLocalFile(false)
+      systemPromptFileHandleRef.current = null
+      deleteFileHandle("systemPromptFileHandle")
     }
-  }, [enableSystemPromptFile, systemPromptFilePath])
+  }, [enableSystemPromptFile, systemPromptFilePath, isSystemPromptFromLocalFile])
 
   const runProbeTest = async () => {
     if (!apiKey || !model || !fullApiPath) return // Added fullApiPath check
@@ -600,32 +1010,111 @@ export default function LLMAPITester() {
     setLoading(true)
     setError("")
     setResponseData("")
-    setResponseDuration(null) // Reset duration on new test
+    setResponseDuration(null)
 
     const modelToUse = model || DEFAULT_VALUES.model
 
-    let finalUserMessage = userMessage
-    if (enablePromptFile && promptFilePath.trim()) {
-      const fileContent = await readLocalFile(promptFilePath.trim())
-      if (fileContent !== null) {
-        finalUserMessage = fileContent
-        setLoadedPromptContent(fileContent)
-        toast({
-          title: "文件加载成功",
-          description: `已从 ${promptFilePath} 加载提示词内容`,
-          className: "bg-blue-50 border-blue-200",
-          duration: 2000,
-        })
+    console.log("[v0] enablePromptFile:", enablePromptFile)
+    console.log("[v0] autoReloadPrompt:", autoReloadPrompt)
+    console.log("[v0] isPromptFromLocalFile:", isPromptFromLocalFile)
+    console.log("[v0] promptFileHandleRef.current:", promptFileHandleRef.current)
+    console.log("[v0] promptFilePath:", promptFilePath)
+
+    // Handle external system prompt loading
+    let finalSystemPrompt = systemPrompt
+
+    if (enableSystemPromptFile && systemPromptFilePath.trim()) {
+      console.log("[v0] System prompt external loading enabled")
+
+      if (autoReloadSystemPrompt) {
+        console.log("[v0] Auto reload system prompt is ON")
+        // Always reload when auto-reload is enabled
+        const isHttpUrl =
+          systemPromptFilePath.trim().startsWith("http://") || systemPromptFilePath.trim().startsWith("https://")
+
+        if (isHttpUrl) {
+          console.log("[v0] Reloading system prompt from HTTP URL")
+          const reloadedContent = await readLocalFile(systemPromptFilePath.trim())
+          if (reloadedContent) {
+            setLoadedSystemPromptContent(reloadedContent)
+            finalSystemPrompt = reloadedContent
+            console.log("[v0] Reloaded system prompt from URL, length:", reloadedContent.length)
+          } else {
+            finalSystemPrompt = loadedSystemPromptContent || systemPrompt
+          }
+        } else if (isSystemPromptFromLocalFile) {
+          console.log("[v0] Reloading system prompt from local file")
+          const reloadedContent = await reloadLocalFile("systemPrompt")
+          if (reloadedContent) {
+            finalSystemPrompt = reloadedContent
+            console.log("[v0] Reloaded system prompt from local file, length:", reloadedContent.length)
+          } else {
+            // User cancelled file selection, use existing content
+            finalSystemPrompt = loadedSystemPromptContent || systemPrompt
+          }
+        } else {
+          finalSystemPrompt = loadedSystemPromptContent || systemPrompt
+        }
       } else {
-        // If file reading failed, abort the test
-        setLoading(false)
-        return
+        // Auto-reload is OFF, use cached content
+        console.log("[v0] Using cached system prompt content")
+        finalSystemPrompt = loadedSystemPromptContent || systemPrompt
       }
     }
 
-    // Use systemPrompt and finalUserMessage instead of prompt
+    console.log("[v0] Final system prompt length:", finalSystemPrompt.length)
+
+    // Handle external user message loading
+    let finalUserMessage = userMessage
+
+    console.log("[v0] enablePromptFile:", enablePromptFile)
+    console.log("[v0] autoReloadPrompt:", autoReloadPrompt)
+    console.log("[v0] isPromptFromLocalFile:", isPromptFromLocalFile)
+    console.log("[v0] promptFileHandleRef.current:", promptFileHandleRef.current)
+    console.log("[v0] promptFilePath:", promptFilePath)
+
+    if (enablePromptFile && promptFilePath.trim()) {
+      console.log("[v0] User message external loading enabled")
+
+      if (autoReloadPrompt) {
+        console.log("[v0] Auto reload prompt is ON")
+        // Always reload when auto-reload is enabled
+        const isHttpUrl = promptFilePath.trim().startsWith("http://") || promptFilePath.trim().startsWith("https://")
+
+        if (isHttpUrl) {
+          console.log("[v0] Reloading user message from HTTP URL")
+          const reloadedContent = await readLocalFile(promptFilePath.trim())
+          if (reloadedContent) {
+            setLoadedPromptContent(reloadedContent)
+            finalUserMessage = reloadedContent
+            console.log("[v0] Reloaded user message from URL, length:", reloadedContent.length)
+          } else {
+            finalUserMessage = loadedPromptContent || userMessage
+          }
+        } else if (isPromptFromLocalFile) {
+          console.log("[v0] Reloading user message from local file")
+          const reloadedContent = await reloadLocalFile("prompt")
+          if (reloadedContent) {
+            finalUserMessage = reloadedContent
+            console.log("[v0] Reloaded user message from local file, length:", reloadedContent.length)
+          } else {
+            // User cancelled file selection, use existing content
+            finalUserMessage = loadedPromptContent || userMessage
+          }
+        } else {
+          finalUserMessage = loadedPromptContent || userMessage
+        }
+      } else {
+        // Auto-reload is OFF, use cached content
+        console.log("[v0] Using cached user message content")
+        finalUserMessage = loadedPromptContent || userMessage
+      }
+    }
+
+    console.log("[v0] Final user message length:", finalUserMessage.length)
+
     const messages = [
-      { role: "system", content: systemPrompt },
+      { role: "system", content: finalSystemPrompt },
       { role: "user", content: finalUserMessage },
     ]
 
@@ -842,6 +1331,16 @@ export default function LLMAPITester() {
     setEnableSystemPromptFile(DEFAULT_VALUES.enableSystemPromptFile)
     setLoadedSystemPromptContent("") // Clear loaded content
 
+    // Reset local file states
+    setIsPromptFromLocalFile(false)
+    promptFileHandleRef.current = null
+    setIsSystemPromptFromLocalFile(false)
+    systemPromptFileHandleRef.current = null
+
+    // Delete file handles from IndexedDB on reset
+    deleteFileHandle("promptFileHandle")
+    deleteFileHandle("systemPromptFileHandle")
+
     // Remove specific items from localStorage
     localStorage.removeItem("llm-api-test-settings")
     // Consider removing individual keys if they were previously saved separately
@@ -867,6 +1366,10 @@ export default function LLMAPITester() {
     setUserMessage(DEFAULT_VALUES.userMessage) // Reset user message
     setPromptFilePath(DEFAULT_VALUES.promptFilePath) // Reset promptFilePath
     setEnablePromptFile(DEFAULT_VALUES.enablePromptFile) // Reset enablePromptFile
+
+    // Reset auto reload settings
+    setAutoReloadPrompt(DEFAULT_VALUES.autoReloadPrompt)
+    setAutoReloadSystemPrompt(DEFAULT_VALUES.autoReloadSystemPrompt)
 
     // Remove specific items from localStorage related to parameters
     localStorage.removeItem("llm-api-test-settings") // Clear all settings and reload defaults
@@ -1193,6 +1696,16 @@ export default function LLMAPITester() {
     setApiKey(item.apiKey)
     setBaseURL(item.baseURL)
     setApiPath(item.apiPath)
+
+    // Re-evaluate local file states based on loaded values
+    // This is a simplified approach; a more robust solution might involve checking if apiKey/baseURL/apiPath match known file paths.
+    // For now, we assume if provider is custom and baseURL/apiPath are set, they might be from a file.
+    // However, directly inferring from file path after loading from history is complex.
+    // We'll reset them to false and rely on the user to re-select if needed.
+    setIsPromptFromLocalFile(false)
+    promptFileHandleRef.current = null
+    setIsSystemPromptFromLocalFile(false)
+    systemPromptFileHandleRef.current = null
 
     toast({
       title: "配置已应用",
@@ -1653,48 +2166,98 @@ export default function LLMAPITester() {
                         <Label htmlFor="enablePromptFile" className="cursor-pointer font-normal text-sm">
                           启用
                         </Label>
+                        <input
+                          type="checkbox"
+                          id="autoReloadPrompt"
+                          checked={autoReloadPrompt}
+                          onChange={(e) => setAutoReloadPrompt(e.target.checked)}
+                          disabled={!enablePromptFile}
+                          className="h-4 w-4 rounded border-input bg-background accent-primary cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                        />
+                        <Label htmlFor="autoReloadPrompt" className="cursor-pointer font-normal text-sm">
+                          自动重载
+                        </Label>
                       </div>
                     </div>
-                    <Input
-                      id="promptFilePath"
-                      value={promptFilePath}
-                      onChange={(e) => setPromptFilePath(e.target.value)}
-                      placeholder="本地文件全路径或提示词链接，如: /path/to/prompt.txt 或 https://example.com/prompt.txt"
-                      className="text-sm"
-                      disabled={!enablePromptFile}
-                    />
+                    <div className="flex gap-2">
+                      <Input
+                        id="promptFilePath"
+                        value={promptFilePath}
+                        onChange={(e) => {
+                          setPromptFilePath(e.target.value)
+                          setIsPromptFromLocalFile(false)
+                          promptFileHandleRef.current = null
+                          setLoadedPromptContent("")
+                        }}
+                        placeholder="https://example.com/prompt.txt 或点击选择本地文件"
+                        className="text-sm flex-1"
+                        disabled={!enablePromptFile}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleLocalFileSelect("prompt")}
+                        disabled={!enablePromptFile}
+                        className="shrink-0"
+                      >
+                        <Upload className="h-4 w-4 mr-1" />
+                        选择文件
+                      </Button>
+                    </div>
                     <p className="text-xs text-muted-foreground">
-                      勾选启用后，每次测试时会自动读取外部文件内容作为用户消息
+                      支持 HTTP/HTTPS 链接或本地文件。点击"选择文件"按钮可直接选择本地 .txt 或 .md 文件。
                     </p>
 
                     {enablePromptFile && loadedPromptContent && (
                       <div className="space-y-1.5 pt-2">
                         <div className="flex items-center justify-between">
-                          <Label className="text-xs text-muted-foreground">外部加载的消息预览</Label>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setIsExternalPromptExpanded(!isExternalPromptExpanded)}
-                          >
-                            {isExternalPromptExpanded ? (
-                              <>
-                                <ChevronUp className="mr-1 h-4 w-4" />
-                                收起
-                              </>
-                            ) : (
-                              <>
-                                <ChevronDown className="mr-1 h-4 w-4" />
-                                展开
-                              </>
+                          <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
+                            外部加载的消息预览
+                            {isPromptFromLocalFile && (
+                              <span className="bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded text-[10px]">
+                                本地文件
+                              </span>
                             )}
-                          </Button>
+                          </Label>
+                          <div className="flex items-center gap-1">
+                            {isPromptFromLocalFile && promptFileHandleRef.current && (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => reloadLocalFile("prompt")}
+                                title="重新加载文件"
+                              >
+                                <RotateCcw className="h-4 w-4" />
+                              </Button>
+                            )}
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setIsExternalPromptExpanded(!isExternalPromptExpanded)}
+                            >
+                              {isExternalPromptExpanded ? (
+                                <>
+                                  <ChevronUp className="mr-1 h-4 w-4" />
+                                  收起
+                                </>
+                              ) : (
+                                <>
+                                  <ChevronDown className="mr-1 h-4 w-4" />
+                                  展开
+                                </>
+                              )}
+                            </Button>
+                          </div>
                         </div>
                         <Textarea
                           value={loadedPromptContent}
                           readOnly
-                          rows={isExternalPromptExpanded ? 10 : 3}
-                          className="bg-muted/50 text-sm font-mono resize-none cursor-default"
+                          className={`bg-muted/50 text-sm font-mono resize-none cursor-default overflow-y-auto transition-all duration-200 ${
+                            isExternalPromptExpanded ? "h-60" : "h-20"
+                          }`}
                         />
                       </div>
                     )}
@@ -1753,48 +2316,98 @@ export default function LLMAPITester() {
                         <Label htmlFor="enableSystemPromptFile" className="cursor-pointer font-normal text-sm">
                           启用
                         </Label>
+                        <input
+                          type="checkbox"
+                          id="autoReloadSystemPrompt"
+                          checked={autoReloadSystemPrompt}
+                          onChange={(e) => setAutoReloadSystemPrompt(e.target.checked)}
+                          disabled={!enableSystemPromptFile}
+                          className="h-4 w-4 rounded border-input bg-background accent-primary cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                        />
+                        <Label htmlFor="autoReloadSystemPrompt" className="cursor-pointer font-normal text-sm">
+                          自动重载
+                        </Label>
                       </div>
                     </div>
-                    <Input
-                      id="systemPromptFilePath"
-                      value={systemPromptFilePath}
-                      onChange={(e) => setSystemPromptFilePath(e.target.value)}
-                      placeholder="本地文件全路径或提示词链接，如: /path/to/system-prompt.txt 或 https://example.com/system-prompt.txt"
-                      className="text-sm"
-                      disabled={!enableSystemPromptFile}
-                    />
+                    <div className="flex gap-2">
+                      <Input
+                        id="systemPromptFilePath"
+                        value={systemPromptFilePath}
+                        onChange={(e) => {
+                          setSystemPromptFilePath(e.target.value)
+                          setIsSystemPromptFromLocalFile(false)
+                          systemPromptFileHandleRef.current = null
+                          setLoadedSystemPromptContent("")
+                        }}
+                        placeholder="https://example.com/system-prompt.txt 或点击选择本地文件"
+                        className="text-sm flex-1"
+                        disabled={!enableSystemPromptFile}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleLocalFileSelect("systemPrompt")}
+                        disabled={!enableSystemPromptFile}
+                        className="shrink-0"
+                      >
+                        <Upload className="h-4 w-4 mr-1" />
+                        选择文件
+                      </Button>
+                    </div>
                     <p className="text-xs text-muted-foreground">
-                      勾选启用后，每次测试时会自动读取外部文件内容作为系统提示词
+                      支持 HTTP/HTTPS 链接或本地文件。点击"选择文件"按钮可直接选择本地 .txt 或 .md 文件。
                     </p>
 
                     {enableSystemPromptFile && loadedSystemPromptContent && (
                       <div className="space-y-1.5 pt-2">
                         <div className="flex items-center justify-between">
-                          <Label className="text-xs text-muted-foreground">外部加载的系统提示词预览</Label>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setIsExternalSystemPromptExpanded(!isExternalSystemPromptExpanded)}
-                          >
-                            {isExternalSystemPromptExpanded ? (
-                              <>
-                                <ChevronUp className="mr-1 h-4 w-4" />
-                                收起
-                              </>
-                            ) : (
-                              <>
-                                <ChevronDown className="mr-1 h-4 w-4" />
-                                展开
-                              </>
+                          <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
+                            外部加载的系统提示词预览
+                            {isSystemPromptFromLocalFile && (
+                              <span className="bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded text-[10px]">
+                                本地文件
+                              </span>
                             )}
-                          </Button>
+                          </Label>
+                          <div className="flex items-center gap-1">
+                            {isSystemPromptFromLocalFile && systemPromptFileHandleRef.current && (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => reloadLocalFile("systemPrompt")}
+                                title="重新加载文件"
+                              >
+                                <RotateCcw className="h-4 w-4" />
+                              </Button>
+                            )}
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setIsExternalSystemPromptExpanded(!isExternalSystemPromptExpanded)}
+                            >
+                              {isExternalSystemPromptExpanded ? (
+                                <>
+                                  <ChevronUp className="mr-1 h-4 w-4" />
+                                  收起
+                                </>
+                              ) : (
+                                <>
+                                  <ChevronDown className="mr-1 h-4 w-4" />
+                                  展开
+                                </>
+                              )}
+                            </Button>
+                          </div>
                         </div>
                         <Textarea
                           value={loadedSystemPromptContent}
                           readOnly
-                          rows={isExternalSystemPromptExpanded ? 10 : 3}
-                          className="bg-muted/50 text-sm font-mono resize-none cursor-default"
+                          className={`bg-muted/50 text-sm font-mono resize-none cursor-default overflow-y-auto transition-all duration-200 ${
+                            isExternalSystemPromptExpanded ? "h-60" : "h-20"
+                          }`}
                         />
                       </div>
                     )}
@@ -2214,7 +2827,7 @@ export default function LLMAPITester() {
                                             {expandedCells.has(`response-raw-${item.timestamp}`) ? (
                                               <>
                                                 <ChevronUp className="size-3" />
-                                                收起
+                                                展开
                                               </>
                                             ) : (
                                               <>
