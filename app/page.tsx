@@ -1198,10 +1198,44 @@ export default function LLMAPITester() {
         .reverse()
         .map((msg) => `${msg.role}: ${msg.content}`)
         .join("\n") // user first, then system
-      const responseContent =
-        parsedResponse?.choices?.[0]?.message?.content ||
-        parsedResponse?.content?.[0]?.text ||
-        JSON.stringify(parsedResponse) // Adjusted to handle potential differences in response structure
+
+      let responseContent = ""
+      const messageContent = parsedResponse?.choices?.[0]?.message?.content
+      const anthropicContent = parsedResponse?.content?.[0]?.text
+
+      if (messageContent || parsedResponse?.choices?.[0]?.message) {
+        // Check for reasoning_details (new format for deep thinking models like OLMo, DeepSeek R1, etc.)
+        const reasoningDetails = parsedResponse?.choices?.[0]?.message?.reasoning_details?.[0]?.text
+        const reasoningContent =
+          parsedResponse?.choices?.[0]?.message?.reasoning_content || parsedResponse?.choices?.[0]?.message?.reasoning
+
+        if (reasoningDetails) {
+          // New format: reasoning_details array with text field
+          if (messageContent) {
+            responseContent = `<Thinking>\n${reasoningDetails}\n</Thinking>\n\n${messageContent}`
+          } else {
+            // If content is empty, just use the reasoning
+            responseContent = reasoningDetails
+          }
+        } else if (reasoningContent) {
+          // Legacy format: reasoning_content or reasoning field
+          if (messageContent) {
+            responseContent = `<Thinking>\n${reasoningContent}\n</Thinking>\n\n${messageContent}`
+          } else {
+            responseContent = reasoningContent
+          }
+        } else if (messageContent) {
+          // Regular content without separate reasoning
+          responseContent = messageContent
+        } else {
+          // Fallback to full message object
+          responseContent = JSON.stringify(parsedResponse?.choices?.[0]?.message)
+        }
+      } else if (anthropicContent) {
+        responseContent = anthropicContent
+      } else {
+        responseContent = JSON.stringify(parsedResponse)
+      }
 
       const historyItem: HistoryItem = {
         id: Date.now().toString(),
@@ -2788,7 +2822,7 @@ export default function LLMAPITester() {
                                             {expandedCells.has(responseContentId) ? (
                                               <>
                                                 <ChevronUp className="size-3" />
-                                                收起\
+                                                收起
                                               </>
                                             ) : (
                                               <>
