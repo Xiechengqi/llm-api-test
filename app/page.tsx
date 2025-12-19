@@ -21,6 +21,7 @@ import {
   Zap,
   Activity,
   Check,
+  FileText,
 } from "lucide-react" // Import Copy, Pencil, List, Eye, EyeOff, RotateCcw, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Calendar, Check, Clock, X, Play, StopCircle icons
 
 import { useState, useEffect, useRef } from "react" // Import useRef
@@ -112,6 +113,10 @@ export default function LLMAPITester() {
     apiPath: "/api/v1/chat/completions",
     systemPrompt: "You are a helpful assistant.",
     userMessage: "Hello! How are you today?",
+    promptFilePath: "",
+    enablePromptFile: false, // Add enablePromptFile state with default false
+    systemPromptFilePath: "",
+    enableSystemPromptFile: false,
     maxTokens: 4096,
     temperature: 1.0,
     topP: 1.0,
@@ -154,6 +159,16 @@ export default function LLMAPITester() {
   const [apiPath, setApiPath] = useState(DEFAULT_VALUES.apiPath) // Added apiPath state
   const [systemPrompt, setSystemPrompt] = useState(DEFAULT_VALUES.systemPrompt) // Added systemPrompt state
   const [userMessage, setUserMessage] = useState(DEFAULT_VALUES.userMessage) // Added userMessage state
+  const [promptFilePath, setPromptFilePath] = useState(DEFAULT_VALUES.promptFilePath)
+  const [enablePromptFile, setEnablePromptFile] = useState(DEFAULT_VALUES.enablePromptFile) // Add enablePromptFile state
+
+  const [loadedPromptContent, setLoadedPromptContent] = useState("")
+  const [isExternalPromptExpanded, setIsExternalPromptExpanded] = useState(false)
+
+  const [systemPromptFilePath, setSystemPromptFilePath] = useState(DEFAULT_VALUES.systemPromptFilePath)
+  const [enableSystemPromptFile, setEnableSystemPromptFile] = useState(DEFAULT_VALUES.enableSystemPromptFile)
+  const [loadedSystemPromptContent, setLoadedSystemPromptContent] = useState("")
+  const [isExternalSystemPromptExpanded, setIsExternalSystemPromptExpanded] = useState(false)
 
   const [history, setHistory] = useState<HistoryItem[]>([])
   const [pageSize, setPageSize] = useState(DEFAULT_VALUES.pageSize)
@@ -197,6 +212,10 @@ export default function LLMAPITester() {
       setApiPath(settings.apiPath ?? DEFAULT_VALUES.apiPath)
       setSystemPrompt(settings.systemPrompt ?? DEFAULT_VALUES.systemPrompt)
       setUserMessage(settings.userMessage ?? DEFAULT_VALUES.userMessage)
+      setPromptFilePath(settings.promptFilePath ?? DEFAULT_VALUES.promptFilePath)
+      setEnablePromptFile(settings.enablePromptFile ?? DEFAULT_VALUES.enablePromptFile) // Load enablePromptFile state
+      setSystemPromptFilePath(settings.systemPromptFilePath ?? DEFAULT_VALUES.systemPromptFilePath)
+      setEnableSystemPromptFile(settings.enableSystemPromptFile ?? DEFAULT_VALUES.enableSystemPromptFile)
       setMaxTokens(settings.maxTokens ?? DEFAULT_VALUES.maxTokens)
       setTemperature(settings.temperature ?? DEFAULT_VALUES.temperature)
       setTopP(settings.topP ?? DEFAULT_VALUES.topP)
@@ -262,6 +281,10 @@ export default function LLMAPITester() {
         apiPath,
         systemPrompt,
         userMessage,
+        promptFilePath,
+        enablePromptFile, // Save enablePromptFile state
+        systemPromptFilePath,
+        enableSystemPromptFile,
         maxTokens,
         temperature,
         topP,
@@ -287,6 +310,10 @@ export default function LLMAPITester() {
     apiPath,
     systemPrompt,
     userMessage,
+    promptFilePath,
+    enablePromptFile,
+    systemPromptFilePath,
+    enableSystemPromptFile,
     maxTokens,
     temperature,
     topP,
@@ -299,8 +326,7 @@ export default function LLMAPITester() {
     timerInterval,
     maxTokensLimit,
     pageSize,
-    prompt, // Add prompt to dependencies
-    // Add isParametersExpanded to dependencies
+    prompt,
     isParametersExpanded,
   ])
 
@@ -345,6 +371,63 @@ export default function LLMAPITester() {
       return [newItem, ...filtered]
     })
   }
+
+  const readLocalFile = async (filePath: string): Promise<string | null> => {
+    try {
+      const response = await fetch(filePath)
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+      }
+      const content = await response.text()
+      return content
+    } catch (error) {
+      let errorMessage = "无法读取指定的文件路径"
+
+      if (error instanceof TypeError && error.message.includes("fetch")) {
+        errorMessage =
+          "跨域访问被阻止（CORS）。请确保文件服务器支持 CORS，或使用支持 CORS 的文件托管服务（如 GitHub Gist、Pastebin 等）。"
+      } else if (error instanceof Error) {
+        errorMessage = error.message
+      }
+
+      toast({
+        variant: "destructive",
+        title: "文件读取失败",
+        description: errorMessage,
+      })
+      return null
+    }
+  }
+
+  useEffect(() => {
+    if (enablePromptFile && promptFilePath) {
+      readLocalFile(promptFilePath)
+        .then((content) => {
+          setLoadedPromptContent(content)
+        })
+        .catch((error) => {
+          console.error("Failed to load prompt file:", error)
+          setLoadedPromptContent("")
+        })
+    } else {
+      setLoadedPromptContent("")
+    }
+  }, [enablePromptFile, promptFilePath])
+
+  useEffect(() => {
+    if (enableSystemPromptFile && systemPromptFilePath) {
+      readLocalFile(systemPromptFilePath)
+        .then((content) => {
+          setLoadedSystemPromptContent(content)
+        })
+        .catch((error) => {
+          console.error("Failed to load system prompt file:", error)
+          setLoadedSystemPromptContent("")
+        })
+    } else {
+      setLoadedSystemPromptContent("")
+    }
+  }, [enableSystemPromptFile, systemPromptFilePath])
 
   const runProbeTest = async () => {
     if (!apiKey || !model || !fullApiPath) return // Added fullApiPath check
@@ -520,10 +603,30 @@ export default function LLMAPITester() {
     setResponseDuration(null) // Reset duration on new test
 
     const modelToUse = model || DEFAULT_VALUES.model
-    // Use systemPrompt and userMessage instead of prompt
+
+    let finalUserMessage = userMessage
+    if (enablePromptFile && promptFilePath.trim()) {
+      const fileContent = await readLocalFile(promptFilePath.trim())
+      if (fileContent !== null) {
+        finalUserMessage = fileContent
+        setLoadedPromptContent(fileContent)
+        toast({
+          title: "文件加载成功",
+          description: `已从 ${promptFilePath} 加载提示词内容`,
+          className: "bg-blue-50 border-blue-200",
+          duration: 2000,
+        })
+      } else {
+        // If file reading failed, abort the test
+        setLoading(false)
+        return
+      }
+    }
+
+    // Use systemPrompt and finalUserMessage instead of prompt
     const messages = [
       { role: "system", content: systemPrompt },
-      { role: "user", content: userMessage },
+      { role: "user", content: finalUserMessage },
     ]
 
     const requestBody = {
@@ -732,7 +835,12 @@ export default function LLMAPITester() {
     setProbeStatus("idle") // Reset probe status
     setSystemPrompt(DEFAULT_VALUES.systemPrompt) // Reset systemPrompt
     setUserMessage(DEFAULT_VALUES.userMessage) // Reset userMessage
-    setPrompt(DEFAULT_VALUES.prompt) // Reset prompt
+    setPromptFilePath(DEFAULT_VALUES.promptFilePath) // Reset promptFilePath
+    setEnablePromptFile(DEFAULT_VALUES.enablePromptFile) // Reset enablePromptFile
+    // Resetting system prompt external file settings
+    setSystemPromptFilePath(DEFAULT_VALUES.systemPromptFilePath)
+    setEnableSystemPromptFile(DEFAULT_VALUES.enableSystemPromptFile)
+    setLoadedSystemPromptContent("") // Clear loaded content
 
     // Remove specific items from localStorage
     localStorage.removeItem("llm-api-test-settings")
@@ -757,6 +865,8 @@ export default function LLMAPITester() {
     setExpandResponseContent(DEFAULT_VALUES.expandResponseContent)
     setSystemPrompt(DEFAULT_VALUES.systemPrompt) // Reset system prompt
     setUserMessage(DEFAULT_VALUES.userMessage) // Reset user message
+    setPromptFilePath(DEFAULT_VALUES.promptFilePath) // Reset promptFilePath
+    setEnablePromptFile(DEFAULT_VALUES.enablePromptFile) // Reset enablePromptFile
 
     // Remove specific items from localStorage related to parameters
     localStorage.removeItem("llm-api-test-settings") // Clear all settings and reload defaults
@@ -1525,6 +1635,70 @@ export default function LLMAPITester() {
                     rows={3}
                     className={isPromptExpanded ? "" : "max-h-32 overflow-y-auto"}
                   />
+
+                  <div className="space-y-1.5 pt-2">
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="promptFilePath" className="flex items-center gap-1.5">
+                        <FileText className="h-3.5 w-3.5" />
+                        从外部加载用户消息
+                      </Label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          id="enablePromptFile"
+                          checked={enablePromptFile}
+                          onChange={(e) => setEnablePromptFile(e.target.checked)}
+                          className="h-4 w-4 rounded border-input bg-background accent-primary cursor-pointer"
+                        />
+                        <Label htmlFor="enablePromptFile" className="cursor-pointer font-normal text-sm">
+                          启用
+                        </Label>
+                      </div>
+                    </div>
+                    <Input
+                      id="promptFilePath"
+                      value={promptFilePath}
+                      onChange={(e) => setPromptFilePath(e.target.value)}
+                      placeholder="本地文件全路径或提示词链接，如: /path/to/prompt.txt 或 https://example.com/prompt.txt"
+                      className="text-sm"
+                      disabled={!enablePromptFile}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      勾选启用后，每次测试时会自动读取外部文件内容作为用户消息
+                    </p>
+
+                    {enablePromptFile && loadedPromptContent && (
+                      <div className="space-y-1.5 pt-2">
+                        <div className="flex items-center justify-between">
+                          <Label className="text-xs text-muted-foreground">外部加载的消息预览</Label>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setIsExternalPromptExpanded(!isExternalPromptExpanded)}
+                          >
+                            {isExternalPromptExpanded ? (
+                              <>
+                                <ChevronUp className="mr-1 h-4 w-4" />
+                                收起
+                              </>
+                            ) : (
+                              <>
+                                <ChevronDown className="mr-1 h-4 w-4" />
+                                展开
+                              </>
+                            )}
+                          </Button>
+                        </div>
+                        <Textarea
+                          value={loadedPromptContent}
+                          readOnly
+                          rows={isExternalPromptExpanded ? 10 : 3}
+                          className="bg-muted/50 text-sm font-mono resize-none cursor-default"
+                        />
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {/* System Prompt Input */}
@@ -1561,6 +1735,70 @@ export default function LLMAPITester() {
                     rows={2}
                     className={isSystemPromptExpanded ? "" : "max-h-32 overflow-y-auto"}
                   />
+
+                  <div className="space-y-1.5 pt-2">
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="systemPromptFilePath" className="flex items-center gap-1.5">
+                        <FileText className="h-3.5 w-3.5" />
+                        从外部加载系统提示词
+                      </Label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          id="enableSystemPromptFile"
+                          checked={enableSystemPromptFile}
+                          onChange={(e) => setEnableSystemPromptFile(e.target.checked)}
+                          className="h-4 w-4 rounded border-input bg-background accent-primary cursor-pointer"
+                        />
+                        <Label htmlFor="enableSystemPromptFile" className="cursor-pointer font-normal text-sm">
+                          启用
+                        </Label>
+                      </div>
+                    </div>
+                    <Input
+                      id="systemPromptFilePath"
+                      value={systemPromptFilePath}
+                      onChange={(e) => setSystemPromptFilePath(e.target.value)}
+                      placeholder="本地文件全路径或提示词链接，如: /path/to/system-prompt.txt 或 https://example.com/system-prompt.txt"
+                      className="text-sm"
+                      disabled={!enableSystemPromptFile}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      勾选启用后，每次测试时会自动读取外部文件内容作为系统提示词
+                    </p>
+
+                    {enableSystemPromptFile && loadedSystemPromptContent && (
+                      <div className="space-y-1.5 pt-2">
+                        <div className="flex items-center justify-between">
+                          <Label className="text-xs text-muted-foreground">外部加载的系统提示词预览</Label>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setIsExternalSystemPromptExpanded(!isExternalSystemPromptExpanded)}
+                          >
+                            {isExternalSystemPromptExpanded ? (
+                              <>
+                                <ChevronUp className="mr-1 h-4 w-4" />
+                                收起
+                              </>
+                            ) : (
+                              <>
+                                <ChevronDown className="mr-1 h-4 w-4" />
+                                展开
+                              </>
+                            )}
+                          </Button>
+                        </div>
+                        <Textarea
+                          value={loadedSystemPromptContent}
+                          readOnly
+                          rows={isExternalSystemPromptExpanded ? 10 : 3}
+                          className="bg-muted/50 text-sm font-mono resize-none cursor-default"
+                        />
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <div className="space-y-4 pt-4">
@@ -1932,7 +2170,7 @@ export default function LLMAPITester() {
                                             {expandedCells.has(responseContentId) ? (
                                               <>
                                                 <ChevronUp className="size-3" />
-                                                收起
+                                                收起\
                                               </>
                                             ) : (
                                               <>
