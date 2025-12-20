@@ -27,6 +27,7 @@ import {
   X,
   Link,
   ZoomIn,
+  Loader2,
 } from "lucide-react" // Import Copy, Pencil, List, Eye, EyeOff, RotateCcw, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Calendar, Check, Clock, X, Play, StopCircle icons
 
 import { useState, useEffect, useRef, useMemo } from "react" // Import useRef, useMemo
@@ -296,6 +297,10 @@ interface MessageImage {
 }
 
 const extractImagesFromRequestContent = (requestContent: string): string[] => {
+  if (!requestContent || requestContent.trim() === "") {
+    return []
+  }
+
   try {
     const parsed = JSON.parse(requestContent)
     const images: string[] = []
@@ -325,7 +330,9 @@ const extractImagesFromRequestContent = (requestContent: string): string[] => {
 
     return images
   } catch (error) {
-    console.error("[v0] Error parsing request content for images:", error)
+    if (process.env.NODE_ENV === "development") {
+      console.error("[v0] Error parsing request content for images:", error)
+    }
     return []
   }
 }
@@ -413,6 +420,7 @@ export default function LLMAPITester() {
   const [presencePenalty, setPresencePenalty] = useState(DEFAULT_VALUES.presencePenalty)
   const [stream, setStream] = useState(false) // Added stream state
   const [loading, setLoading] = useState(false)
+  const abortControllerRef = useRef<AbortController | null>(null)
   const [requestData, setRequestData] = useState("")
   const [responseData, setResponseData] = useState("")
   const [error, setError] = useState("")
@@ -473,6 +481,7 @@ export default function LLMAPITester() {
   const [messageImages, setMessageImages] = useState<MessageImage[]>([])
   const [imageUrl, setImageUrl] = useState("")
   const [showImageUrlInput, setShowImageUrlInput] = useState(false)
+  const [isAddingImageUrl, setIsAddingImageUrl] = useState(false)
   const [zoomedImage, setZoomedImage] = useState<MessageImage | null>(null)
 
   const { toast } = useToast()
@@ -533,6 +542,8 @@ export default function LLMAPITester() {
       setMessageImages(settings.messageImages ?? [])
       setImageUrl(settings.imageUrl ?? "")
       setShowImageUrlInput(settings.showImageUrlInput ?? false)
+      // Load isAddingImageUrl state
+      setIsAddingImageUrl(settings.isAddingImageUrl ?? false)
 
       const restoreFileHandlesSync = async () => {
         // Use settings values directly instead of state (which hasn't updated yet)
@@ -677,6 +688,8 @@ export default function LLMAPITester() {
       messageImages,
       imageUrl,
       showImageUrlInput,
+      // Save isAddingImageUrl state
+      isAddingImageUrl,
     }
     localStorage.setItem("llm-api-test-settings", JSON.stringify(settings))
   }, [
@@ -718,6 +731,7 @@ export default function LLMAPITester() {
     messageImages,
     imageUrl,
     showImageUrlInput,
+    isAddingImageUrl, // Include isAddingImageUrl in dependencies
   ])
 
   useEffect(() => {
@@ -1222,49 +1236,49 @@ export default function LLMAPITester() {
   }, [provider])
 
   const handleTest = async () => {
-    if (loading) return // Prevent multiple simultaneous tests
+    // if (loading) return // Prevent multiple simultaneous tests
+    console.log("[v0] handleTest called, loading:", loading)
 
     setLoading(true)
     setError("")
     setRequestData("")
     setResponseData("")
     setResponseDuration(null)
-    // Removed setRequestStartTime(null) as it's not used here.
-    
-    try {
-      // CHANGE: Store reloaded images in a variable to use in the API request
-      let currentImages = messageImages
+    abortControllerRef.current = new AbortController()
 
-      if (autoReloadImages && messageImages.some((img) => img.type === "url")) {
-        console.log("[v0] Auto-reloading images before test...")
+    // CHANGE: Store reloaded images in a variable to use in the API request
+    let currentImages = messageImages
 
-        // CHANGE: Show notification that images are being reloaded
-        toast({
-          title: "正在重载图片",
-          description: `正在重新加载 ${messageImages.filter((img) => img.type === "url").length} 张图片...`,
-          duration: 2000,
-        })
+    if (autoReloadImages && messageImages.some((img) => img.type === "url")) {
+      console.log("[v0] Auto-reloading images before test...")
 
-        currentImages = await handleReloadImages()
+      const reloadToast = toast({
+        title: "正在重载图片",
+        description: `正在重新加载 ${messageImages.filter((img) => img.type === "url").length} 张图片...`,
+        duration: Number.POSITIVE_INFINITY, // Never auto-dismiss
+      })
 
-        // CHANGE: Show notification that reload is complete
-        toast({
-          title: "图片重载完成",
-          description: "所有图片已更新，开始测试...",
-          className: "bg-green-50 border-green-200",
-          duration: 2000,
-        })
-      }
+      currentImages = await handleReloadImages()
 
-      if (!apiKey) {
-        setError("Please provide an API key")
-        toast({
-          variant: "destructive",
-          title: "错误",
-          description: "请提供 API Key",
-        })
-        return
-      }
+      reloadToast.dismiss()
+      toast({
+        title: "图片重载完成",
+        description: "所有图片已更新，开始测试...",
+        className: "bg-green-50 border-green-200",
+        duration: 2000,
+      })
+    }
+
+    if (!apiKey) {
+      setError("Please provide an API key")
+      toast({
+        variant: "destructive",
+        title: "错误",
+        description: "请提供 API Key",
+      })
+      setLoading(false) // Ensure loading is set to false on error
+      return
+    }
 
     const modelToUse = model || DEFAULT_VALUES.model
 
@@ -1400,9 +1414,9 @@ export default function LLMAPITester() {
       userMessageContent = contentParts
     }
 
-    const messages = [
-      { role: "system", content: finalSystemPrompt },
+    const messages: any[] = [
       { role: "user", content: userMessageContent },
+      { role: "system", content: finalSystemPrompt },
     ]
 
     const requestBody = {
@@ -1447,7 +1461,7 @@ export default function LLMAPITester() {
           Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify(requestBody),
-        signal: controller.signal,
+        signal: abortControllerRef.current.signal,
       })
 
       clearTimeout(timeoutId)
@@ -1549,29 +1563,35 @@ export default function LLMAPITester() {
           description: `API 响应状态: ${response.status}`,
         })
       }
-    } catch (err: any) {
+    } catch (error: any) {
       // Changed to any to access error.name and error.message
       clearTimeout(timeoutId)
-      const errorMessage = err instanceof Error ? err.message : "Unknown error occurred"
+      console.error("[v0] Error during test:", error)
 
-      if (err instanceof Error && err.name === "AbortError") {
-        const timeoutMsg = "请求超时 (60秒)"
-        setError(timeoutMsg)
+      if (error.name === "AbortError") {
+        setError("测试已中断")
+        toast({
+          title: "测试已中断",
+          description: "测试已被用户中断",
+          duration: 2000,
+        })
+      } else if (error.message.includes("API key")) {
+        setError(error.message)
         toast({
           variant: "destructive",
-          title: "请求超时",
-          description: "API 请求超过 60 秒未响应",
+          title: "错误",
+          description: error.message,
         })
       } else {
-        setError(`Request failed: ${errorMessage}`)
+        setError(error.message || "An error occurred")
         toast({
           variant: "destructive",
-          title: "请求失败",
-          description: errorMessage,
+          title: "错误",
+          description: error.message || "发生未知错误",
         })
       }
 
-      const errorResponse = JSON.stringify({ error: errorMessage }, null, 2)
+      const errorResponse = JSON.stringify({ error: error.message || "Unknown error" }, null, 2)
       setResponseData(errorResponse)
       setResponseDuration(null) // Reset duration on error
 
@@ -1592,9 +1612,9 @@ export default function LLMAPITester() {
         }
         return updated
       })
-    }
     } finally {
       setLoading(false)
+      abortControllerRef.current = null
     }
   }
 
@@ -1621,6 +1641,20 @@ export default function LLMAPITester() {
       timerRef.current = null
     }
     setIsTimerRunning(false)
+  }
+
+  const handleInterruptTest = () => {
+    console.log("[v0] handleInterruptTest called")
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+      setLoading(false)
+      abortControllerRef.current = null
+      toast({
+        title: "测试已中断",
+        description: "测试已被用户中断",
+        duration: 2000,
+      })
+    }
   }
 
   // Combine test and timer start logic
@@ -1673,6 +1707,7 @@ export default function LLMAPITester() {
     setMessageImages([])
     setImageUrl("")
     setShowImageUrlInput(false)
+    setIsAddingImageUrl(false) // Reset loading state
     setAutoReloadImages(DEFAULT_VALUES.autoReloadImages) // Reset autoReloadImages
 
     // Remove specific items from localStorage
@@ -1980,7 +2015,7 @@ export default function LLMAPITester() {
         // Try to verify it's valid JSON
         JSON.parse(trimmed)
         // If successfully parsed, wrap original content in json code block without formatting
-        processedContent = "\`\`\`json\n" + trimmed + "\n\`\`\`"
+        processedContent = "```json\n" + trimmed + "\n```"
         isJson = true
       }
     } catch (e) {
@@ -1990,9 +2025,9 @@ export default function LLMAPITester() {
     const parts = processedContent.split(/(```[\s\S]*?```)/g)
 
     return parts.map((part, index) => {
-      if (part.startsWith("\`\`\`") && part.endsWith("\`\`\`")) {
+      if (part.startsWith("```") && part.endsWith("```")) {
         const lines = part.split("\n")
-        const language = lines[0].replace("\`\`\`", "").trim()
+        const language = lines[0].replace("```", "").trim()
         const codeLines = lines.slice(1, -1)
         const code = codeLines.join("\n")
         const lineCount = codeLines.length
@@ -2136,6 +2171,8 @@ export default function LLMAPITester() {
       return
     }
 
+    setIsAddingImageUrl(true)
+
     try {
       const urlWithCacheBust = imageUrl.trim().includes("?")
         ? `${imageUrl.trim()}&_t=${Date.now()}`
@@ -2157,6 +2194,7 @@ export default function LLMAPITester() {
           title: "错误",
           description: "URL 不是有效的图片",
         })
+        setIsAddingImageUrl(false)
         return
       }
 
@@ -2175,6 +2213,7 @@ export default function LLMAPITester() {
         setMessageImages((prev) => [...prev, newImage])
         setImageUrl("")
         setShowImageUrlInput(false)
+        setIsAddingImageUrl(false)
         toast({
           title: "成功",
           description: "图片已加载并添加",
@@ -2187,23 +2226,17 @@ export default function LLMAPITester() {
           title: "错误",
           description: "转换图片失败",
         })
+        setIsAddingImageUrl(false)
       }
 
       reader.readAsDataURL(blob)
     } catch (error) {
-      console.error("[v0] Error loading image from URL:", error)
-      let errorMessage = "无法加载图片"
-
-      if (error instanceof TypeError && error.message.includes("fetch")) {
-        errorMessage = "跨域访问被阻止（CORS）。请确保图片服务器支持 CORS。"
-      } else if (error instanceof Error) {
-        errorMessage = error.message
-      }
-
+      console.error("[v0] Error loading image from URL:", error) // Changed from "[v0] Error loading image from URL:"
+      setIsAddingImageUrl(false)
       toast({
         variant: "destructive",
-        title: "加载图片失败",
-        description: errorMessage,
+        title: "加载失败",
+        description: error instanceof Error ? error.message : "无法加载图片",
       })
     }
   }
@@ -2657,19 +2690,15 @@ export default function LLMAPITester() {
                       <StopCircle className="mr-2 size-4" />
                       停止定时
                     </Button>
+                  ) : loading ? (
+                    <Button onClick={handleInterruptTest} variant="destructive" size="sm">
+                      <X className="mr-2 size-4" />
+                      中断
+                    </Button>
                   ) : (
                     <Button onClick={handleStartTest} disabled={loading} size="sm">
-                      {loading ? (
-                        <>
-                          <RotateCcw className="mr-2 size-4 animate-spin" />
-                          测试中...
-                        </>
-                      ) : (
-                        <>
-                          <Play className="mr-2 size-4" />
-                          开始测试
-                        </>
-                      )}
+                      <Play className="mr-2 size-4" />
+                      开始测试
                     </Button>
                   )}
                 </div>
@@ -2751,30 +2780,43 @@ export default function LLMAPITester() {
                     </div>
 
                     {showImageUrlInput && (
-                      <div className="flex gap-2">
-                        <Input
-                          placeholder="输入图片链接 (https://...)"
-                          value={imageUrl}
-                          onChange={(e) => setImageUrl(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              handleAddImageUrl()
-                            }
-                          }}
-                        />
-                        <Button onClick={handleAddImageUrl} size="sm">
-                          添加
-                        </Button>
-                        <Button
-                          onClick={() => {
-                            setShowImageUrlInput(false)
-                            setImageUrl("")
-                          }}
-                          variant="ghost"
-                          size="sm"
-                        >
-                          取消
-                        </Button>
+                      <div className="flex flex-col gap-2">
+                        <div className="flex gap-2">
+                          <Input
+                            placeholder="输入图片链接 (https://...)"
+                            value={imageUrl}
+                            onChange={(e) => setImageUrl(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                handleAddImageUrl()
+                              }
+                            }}
+                            disabled={isAddingImageUrl}
+                          />
+                          <Button onClick={handleAddImageUrl} size="sm" disabled={isAddingImageUrl}>
+                            {isAddingImageUrl ? (
+                              <>
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              </>
+                            ) : (
+                              "添加"
+                            )}
+                          </Button>
+                          <Button
+                            onClick={() => {
+                              setShowImageUrlInput(false)
+                              setImageUrl("")
+                            }}
+                            variant="ghost"
+                            size="sm"
+                            disabled={isAddingImageUrl}
+                          >
+                            取消
+                          </Button>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          示例: https://api.btstu.cn/sjbz/api.php?lx=dongman&format=images
+                        </p>
                       </div>
                     )}
 
@@ -2923,7 +2965,7 @@ export default function LLMAPITester() {
                         <Textarea
                           value={loadedPromptContent}
                           readOnly
-                          className={`bg-muted/50 text-sm font-mono resize-none cursor-default overflow-y-auto transition-all duration-200 ${
+                          className={`bg-muted/50 text-sm font-mono cursor-default overflow-y-auto transition-all duration-200 ${
                             isExternalPromptExpanded ? "h-60" : "h-20"
                           }`}
                         />
@@ -3077,7 +3119,7 @@ export default function LLMAPITester() {
                           <Textarea
                             value={loadedSystemPromptContent}
                             readOnly
-                            className={`bg-muted/50 text-sm font-mono resize-none cursor-default overflow-y-auto transition-all duration-200 ${
+                            className={`bg-muted/50 text-sm font-mono cursor-default overflow-y-auto transition-all duration-200 ${
                               isExternalSystemPromptExpanded ? "h-60" : "h-20"
                             }`}
                           />
@@ -3489,10 +3531,10 @@ export default function LLMAPITester() {
                                       )}
                                     </div>
                                     {(() => {
-                                      const hasCodeBlock = item.responseContent.includes("\`\`\`")
+                                      const hasCodeBlock = item.responseContent.includes("```")
                                       const codeBlockLines = hasCodeBlock
                                         ? (item.responseContent
-                                            .split("\`\`\`")
+                                            .split("```")
                                             .filter((_, i) => i % 2 === 1)[0]
                                             ?.split("\n")?.length ?? 0)
                                         : 0
