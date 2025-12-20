@@ -23,9 +23,12 @@ import {
   Check,
   FileText,
   Upload,
+  ImageIcon,
+  X,
+  Link,
 } from "lucide-react" // Import Copy, Pencil, List, Eye, EyeOff, RotateCcw, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Calendar, Check, Clock, X, Play, StopCircle icons
 
-import { useState, useEffect, useRef } from "react" // Import useRef
+import { useState, useEffect, useRef, useMemo } from "react" // Import useRef, useMemo
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -36,6 +39,10 @@ import { Slider } from "@/components/ui/slider"
 import { useToast } from "@/hooks/use-toast"
 import { Toaster } from "@/components/ui/toaster"
 import { TableBody, TableCell, TableHead, TableRow, Table } from "@/components/ui/table" // Import Table components
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { SimpleMultiSelect } from "@/components/ui/simple-multi-select"
+import { Dialog, DialogContent } from "@/components/ui/dialog"
 
 const DB_NAME = "llm-api-tester-db"
 const DB_VERSION = 1
@@ -196,11 +203,24 @@ const deleteFileHandle = async (key: string): Promise<void> => {
   }
 }
 
-// Define OpenRouterModel interface
 interface OpenRouterModel {
   id: string
   name?: string
-  context?: number // Example property, adjust as needed
+  context_length?: number
+  architecture?: {
+    input_modalities?: string[]
+    output_modalities?: string[]
+    modality?: string
+    tokenizer?: string
+    instruct_type?: string | null
+  }
+  pricing?: {
+    prompt?: string
+    completion?: string
+    [key: string]: any
+  }
+  description?: string
+  created?: number
   // Add other properties as per the actual API response
 }
 
@@ -265,6 +285,15 @@ interface HistoryItem {
   responseRaw: string
 }
 
+interface MessageImage {
+  id: string
+  type: "url" | "file"
+  url?: string // For URL type
+  base64?: string // For file type
+  mimeType?: string // For file type
+  name?: string // Original file name
+}
+
 export default function LLMAPITester() {
   const DEFAULT_VALUES = {
     provider: "openrouter" as const,
@@ -280,6 +309,7 @@ export default function LLMAPITester() {
     enableSystemPromptFile: false,
     autoReloadPrompt: false,
     autoReloadSystemPrompt: false,
+    autoReloadImages: false,
     maxTokens: 4096,
     temperature: 1.0,
     topP: 1.0,
@@ -296,7 +326,7 @@ export default function LLMAPITester() {
   }
 
   const [provider, setProvider] = useState(DEFAULT_VALUES.provider)
-  const [endpoint, setEndpoint] = useState("") // This state seems redundant with baseUrl, consider consolidating.
+  const [endpoint, setEndpoint] = useState("") // This state seems redundant with baseURL, consider consolidating.
   const [apiKey, setApiKey] = useState(DEFAULT_VALUES.apiKey)
   const [showApiKey, setShowApiKey] = useState(false)
   const [isPromptExpanded, setIsPromptExpanded] = useState(false)
@@ -305,6 +335,9 @@ export default function LLMAPITester() {
   const [openrouterModels, setOpenrouterModels] = useState<OpenRouterModel[]>([])
   const [isLoadingModels, setIsLoadingModels] = useState(false)
   const [isCustomModel, setIsCustomModel] = useState(false)
+  const [selectedInputModalities, setSelectedInputModalities] = useState<string[]>([])
+  const [selectedOutputModalities, setSelectedOutputModalities] = useState<string[]>([])
+  const [modelSearchQuery, setModelSearchQuery] = useState("")
   const [maxTokens, setMaxTokens] = useState(DEFAULT_VALUES.maxTokens)
   const [temperature, setTemperature] = useState(DEFAULT_VALUES.temperature)
   const [topP, setTopP] = useState(DEFAULT_VALUES.topP)
@@ -340,6 +373,7 @@ export default function LLMAPITester() {
 
   const [autoReloadPrompt, setAutoReloadPrompt] = useState(DEFAULT_VALUES.autoReloadPrompt)
   const [autoReloadSystemPrompt, setAutoReloadSystemPrompt] = useState(DEFAULT_VALUES.autoReloadSystemPrompt)
+  const [autoReloadImages, setAutoReloadImages] = useState(DEFAULT_VALUES.autoReloadImages)
 
   const [history, setHistory] = useState<HistoryItem[]>([])
   const [pageSize, setPageSize] = useState(DEFAULT_VALUES.pageSize)
@@ -365,6 +399,14 @@ export default function LLMAPITester() {
   const modelHistoryPageSize = 5
   const [visibleApiKeys, setVisibleApiKeys] = useState<Set<string>>(new Set())
 
+  const [availableInputModalities, setAvailableInputModalities] = useState<string[]>([])
+  const [availableOutputModalities, setAvailableOutputModalities] = useState<string[]>([])
+
+  const [messageImages, setMessageImages] = useState<MessageImage[]>([])
+  const [imageUrl, setImageUrl] = useState("")
+  const [showImageUrlInput, setShowImageUrlInput] = useState(false)
+  const [zoomedImage, setZoomedImage] = useState<MessageImage | null>(null)
+
   const { toast } = useToast()
 
   // Use a unified base URL for API calls
@@ -389,6 +431,7 @@ export default function LLMAPITester() {
       setEnableSystemPromptFile(settings.enableSystemPromptFile ?? DEFAULT_VALUES.enableSystemPromptFile)
       setAutoReloadPrompt(settings.autoReloadPrompt ?? DEFAULT_VALUES.autoReloadPrompt)
       setAutoReloadSystemPrompt(settings.autoReloadSystemPrompt ?? DEFAULT_VALUES.autoReloadSystemPrompt)
+      setAutoReloadImages(settings.autoReloadImages ?? DEFAULT_VALUES.autoReloadImages)
       setMaxTokens(settings.maxTokens ?? DEFAULT_VALUES.maxTokens)
       setTemperature(settings.temperature ?? DEFAULT_VALUES.temperature)
       setTopP(settings.topP ?? DEFAULT_VALUES.topP)
@@ -408,6 +451,20 @@ export default function LLMAPITester() {
       // Load local file state if settings exist
       setIsPromptFromLocalFile(settings.isPromptFromLocalFile ?? false)
       setIsSystemPromptFromLocalFile(settings.isSystemPromptFromLocalFile ?? false)
+
+      // Load modality filters and search query if available
+      setSelectedInputModalities(settings.selectedInputModalities ?? [])
+      setSelectedOutputModalities(settings.selectedOutputModalities ?? [])
+      setModelSearchQuery(settings.modelSearchQuery ?? "")
+
+      // Load available modalities from saved settings if available
+      setAvailableInputModalities(settings.availableInputModalities ?? [])
+      setAvailableOutputModalities(settings.availableOutputModalities ?? [])
+
+      // Load image-related state
+      setMessageImages(settings.messageImages ?? [])
+      setImageUrl(settings.imageUrl ?? "")
+      setShowImageUrlInput(settings.showImageUrlInput ?? false)
 
       const restoreFileHandlesSync = async () => {
         // Use settings values directly instead of state (which hasn't updated yet)
@@ -524,6 +581,7 @@ export default function LLMAPITester() {
       enableSystemPromptFile,
       autoReloadPrompt,
       autoReloadSystemPrompt,
+      autoReloadImages,
       maxTokens,
       temperature,
       topP,
@@ -540,6 +598,17 @@ export default function LLMAPITester() {
       isParametersExpanded,
       isPromptFromLocalFile,
       isSystemPromptFromLocalFile,
+      // Save modality filters and search query
+      selectedInputModalities,
+      selectedOutputModalities,
+      modelSearchQuery,
+      // Save available modalities to settings
+      availableInputModalities,
+      availableOutputModalities,
+      // Save image-related state
+      messageImages,
+      imageUrl,
+      showImageUrlInput,
     }
     localStorage.setItem("llm-api-test-settings", JSON.stringify(settings))
   }, [
@@ -556,6 +625,7 @@ export default function LLMAPITester() {
     enableSystemPromptFile,
     autoReloadPrompt,
     autoReloadSystemPrompt,
+    autoReloadImages,
     maxTokens,
     temperature,
     topP,
@@ -572,6 +642,14 @@ export default function LLMAPITester() {
     isParametersExpanded,
     isPromptFromLocalFile,
     isSystemPromptFromLocalFile,
+    selectedInputModalities,
+    selectedOutputModalities,
+    modelSearchQuery,
+    availableInputModalities,
+    availableOutputModalities,
+    messageImages,
+    imageUrl,
+    showImageUrlInput,
   ])
 
   useEffect(() => {
@@ -974,22 +1052,34 @@ export default function LLMAPITester() {
   const fetchOpenRouterModels = async () => {
     setIsLoadingModels(true)
     try {
-      // Fetching from a placeholder URL, replace with actual API endpoint if available
-      const response = await fetch("https://openrouter-free-api.xiechengqi.top/data/openrouter-free-text-to-text.json")
+      const response = await fetch("https://openrouter-free-api.xiechengqi.top/data/openrouter-models.json")
       if (response.ok) {
-        const data = await response.json()
-        // Assuming the API returns an array of model objects with an 'id' field
-        setOpenrouterModels(Array.isArray(data) ? data : [])
-        if (Array.isArray(data) && data.length > 0 && !model) {
-          setModel(data[0].id)
-        }
+        const responseData = await response.json()
+        console.log("[v0] Fetched OpenRouter models:", responseData)
+        const data = Array.isArray(responseData) ? responseData : responseData.data || []
+        setOpenrouterModels(data)
+
+        const inputMods = new Set<string>()
+        const outputMods = new Set<string>()
+        data.forEach((model: OpenRouterModel) => {
+          model.architecture?.input_modalities?.forEach((m) => inputMods.add(m))
+          model.architecture?.output_modalities?.forEach((m) => outputMods.add(m))
+        })
+        setAvailableInputModalities(Array.from(inputMods).sort())
+        setAvailableOutputModalities(Array.from(outputMods).sort())
+        console.log("[v0] Available input modalities:", Array.from(inputMods).sort())
+        console.log("[v0] Available output modalities:", Array.from(outputMods).sort())
       } else {
         console.error("[v0] Failed to fetch OpenRouter models:", response.statusText)
         setOpenrouterModels([])
+        setAvailableInputModalities([])
+        setAvailableOutputModalities([])
       }
     } catch (error) {
       console.error("[v0] Error fetching OpenRouter models:", error)
       setOpenrouterModels([])
+      setAvailableInputModalities([])
+      setAvailableOutputModalities([])
     } finally {
       setIsLoadingModels(false)
     }
@@ -998,6 +1088,10 @@ export default function LLMAPITester() {
   useEffect(() => {
     if (provider === "openrouter") {
       fetchOpenRouterModels()
+    } else {
+      // Clear available modalities when switching away from OpenRouter
+      setAvailableInputModalities([])
+      setAvailableOutputModalities([])
     }
   }, [provider])
 
@@ -1040,17 +1134,20 @@ export default function LLMAPITester() {
         if (isHttpUrl) {
           console.log("[v0] Reloading system prompt from HTTP URL")
           const reloadedContent = await readLocalFile(systemPromptFilePath.trim())
-          if (reloadedContent) {
+          if (reloadedContent !== null) {
+            // Check for null explicitly
             setLoadedSystemPromptContent(reloadedContent)
             finalSystemPrompt = reloadedContent
             console.log("[v0] Reloaded system prompt from URL, length:", reloadedContent.length)
           } else {
+            // If reload failed, use existing loaded content or default
             finalSystemPrompt = loadedSystemPromptContent || systemPrompt
           }
         } else if (isSystemPromptFromLocalFile) {
           console.log("[v0] Reloading system prompt from local file")
           const reloadedContent = await reloadLocalFile("systemPrompt")
-          if (reloadedContent) {
+          if (reloadedContent !== null) {
+            // Check for null explicitly
             finalSystemPrompt = reloadedContent
             console.log("[v0] Reloaded system prompt from local file, length:", reloadedContent.length)
           } else {
@@ -1089,17 +1186,20 @@ export default function LLMAPITester() {
         if (isHttpUrl) {
           console.log("[v0] Reloading user message from HTTP URL")
           const reloadedContent = await readLocalFile(promptFilePath.trim())
-          if (reloadedContent) {
+          if (reloadedContent !== null) {
+            // Check for null explicitly
             setLoadedPromptContent(reloadedContent)
             finalUserMessage = reloadedContent
             console.log("[v0] Reloaded user message from URL, length:", reloadedContent.length)
           } else {
+            // If reload failed, use existing loaded content or default
             finalUserMessage = loadedPromptContent || userMessage
           }
         } else if (isPromptFromLocalFile) {
           console.log("[v0] Reloading user message from local file")
           const reloadedContent = await reloadLocalFile("prompt")
-          if (reloadedContent) {
+          if (reloadedContent !== null) {
+            // Check for null explicitly
             finalUserMessage = reloadedContent
             console.log("[v0] Reloaded user message from local file, length:", reloadedContent.length)
           } else {
@@ -1118,9 +1218,42 @@ export default function LLMAPITester() {
 
     console.log("[v0] Final user message length:", finalUserMessage.length)
 
+    let userMessageContent: any = finalUserMessage
+
+    if (messageImages.length > 0) {
+      // If there are images, use the multi-modal format
+      const contentParts: any[] = [
+        {
+          type: "text",
+          text: finalUserMessage,
+        },
+      ]
+
+      // Add all images
+      messageImages.forEach((img) => {
+        if (img.type === "url" && img.url) {
+          contentParts.push({
+            type: "image_url",
+            image_url: {
+              url: img.url,
+            },
+          })
+        } else if (img.type === "file" && img.base64) {
+          contentParts.push({
+            type: "image_url",
+            image_url: {
+              url: img.base64,
+            },
+          })
+        }
+      })
+
+      userMessageContent = contentParts
+    }
+
     const messages = [
       { role: "system", content: finalSystemPrompt },
-      { role: "user", content: finalUserMessage },
+      { role: "user", content: userMessageContent },
     ]
 
     const requestBody = {
@@ -1380,9 +1513,23 @@ export default function LLMAPITester() {
     deleteFileHandle("promptFileHandle")
     deleteFileHandle("systemPromptFileHandle")
 
+    // Reset modality filters and search query
+    setSelectedInputModalities([])
+    setSelectedOutputModalities([])
+    setModelSearchQuery("")
+
+    // Reset available modalities
+    setAvailableInputModalities([])
+    setAvailableOutputModalities([])
+
+    // Reset image-related state
+    setMessageImages([])
+    setImageUrl("")
+    setShowImageUrlInput(false)
+    setAutoReloadImages(DEFAULT_VALUES.autoReloadImages) // Reset autoReloadImages
+
     // Remove specific items from localStorage
-    localStorage.removeItem("llm-api-test-settings")
-    // Consider removing individual keys if they were previously saved separately
+    localStorage.removeItem("llm-api-test-settings") // Clear all settings and reload defaults
   }
 
   const handleResetParameters = () => {
@@ -1409,6 +1556,7 @@ export default function LLMAPITester() {
     // Reset auto reload settings
     setAutoReloadPrompt(DEFAULT_VALUES.autoReloadPrompt)
     setAutoReloadSystemPrompt(DEFAULT_VALUES.autoReloadSystemPrompt)
+    setAutoReloadImages(DEFAULT_VALUES.autoReloadImages) // Reset autoReloadImages
 
     // Remove specific items from localStorage related to parameters
     localStorage.removeItem("llm-api-test-settings") // Clear all settings and reload defaults
@@ -1682,7 +1830,7 @@ export default function LLMAPITester() {
       // Check if content looks like JSON (starts with { or [)
       const trimmed = content.trim()
       if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
-        // Try to parse to verify it's valid JSON
+        // Try to verify it's valid JSON
         JSON.parse(trimmed)
         // If successfully parsed, wrap original content in json code block without formatting
         processedContent = "```json\n" + trimmed + "\n```"
@@ -1806,6 +1954,127 @@ export default function LLMAPITester() {
     modelHistoryPage * modelHistoryPageSize,
   )
 
+  const filteredOpenRouterModels = useMemo(() => {
+    let filtered = openrouterModels
+
+    if (selectedInputModalities.length > 0) {
+      filtered = filtered.filter((model) =>
+        selectedInputModalities.every((modality) => model.architecture?.input_modalities?.includes(modality)),
+      )
+    }
+
+    if (selectedOutputModalities.length > 0) {
+      filtered = filtered.filter((model) =>
+        selectedOutputModalities.every((modality) => model.architecture?.output_modalities?.includes(modality)),
+      )
+    }
+
+    // Filter by search query
+    if (modelSearchQuery.trim()) {
+      const query = modelSearchQuery.toLowerCase()
+      filtered = filtered.filter(
+        (model) => model.id.toLowerCase().includes(query) || model.name?.toLowerCase().includes(query),
+      )
+    }
+
+    return filtered
+  }, [openrouterModels, selectedInputModalities, selectedOutputModalities, modelSearchQuery])
+
+  const handleAddImageUrl = () => {
+    if (!imageUrl.trim()) {
+      toast({
+        variant: "destructive",
+        title: "错误",
+        description: "请输入图片链接",
+      })
+      return
+    }
+
+    const newImage: MessageImage = {
+      id: Date.now().toString(),
+      type: "url",
+      url: imageUrl.trim(),
+    }
+
+    setMessageImages((prev) => [...prev, newImage])
+    setImageUrl("")
+    setShowImageUrlInput(false)
+    toast({
+      title: "成功",
+      description: "图片已添加",
+    })
+  }
+
+  const handleImageFileUpload = async () => {
+    const input = document.createElement("input")
+    input.type = "file"
+    input.accept = "image/*"
+
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0]
+      if (!file) return
+
+      if (!file.type.startsWith("image/")) {
+        toast({
+          variant: "destructive",
+          title: "错误",
+          description: "请选择图片文件",
+        })
+        return
+      }
+
+      try {
+        const reader = new FileReader()
+        reader.onload = (event) => {
+          const base64String = event.target?.result as string
+
+          const newImage: MessageImage = {
+            id: Date.now().toString(),
+            type: "file",
+            base64: base64String,
+            mimeType: file.type,
+            name: file.name,
+          }
+
+          setMessageImages((prev) => [...prev, newImage])
+          toast({
+            title: "成功",
+            description: `图片 ${file.name} 已添加`,
+          })
+
+          // Trigger auto-reload if enabled
+          if (autoReloadImages) {
+            console.log("[v0] Auto-reloading images after upload...")
+            handleTest() // Re-run the test
+          }
+        }
+
+        reader.onerror = () => {
+          toast({
+            variant: "destructive",
+            title: "错误",
+            description: "读取图片文件失败",
+          })
+        }
+
+        reader.readAsDataURL(file)
+      } catch (error) {
+        console.error("[v0] Error reading image file:", error)
+        toast({
+          variant: "destructive",
+          title: "错误",
+          description: "读取图片文件失败",
+        })
+      }
+    }
+
+    input.click()
+  }
+
+  const handleRemoveImage = (imageId: string) => {
+    setMessageImages((prev) => prev.filter((img) => img.id !== imageId))
+  }
+
   return (
     <div className="min-h-screen bg-background">
       <nav className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -1844,27 +2113,72 @@ export default function LLMAPITester() {
               </SelectContent>
             </Select>
 
+            {provider === "openrouter" && (
+              <>
+                <SimpleMultiSelect
+                  options={availableInputModalities}
+                  selected={selectedInputModalities}
+                  onChange={setSelectedInputModalities}
+                  placeholder="输入模态"
+                  className="w-[140px]"
+                />
+                <SimpleMultiSelect
+                  options={availableOutputModalities}
+                  selected={selectedOutputModalities}
+                  onChange={setSelectedOutputModalities}
+                  placeholder="输出模态"
+                  className="w-[140px]"
+                />
+              </>
+            )}
+
             {provider === "openrouter" ? (
               <div className="flex items-center gap-2">
                 {!isCustomModel ? (
                   <>
-                    <Select value={model} onValueChange={setModel} disabled={isLoadingModels}>
-                      <SelectTrigger className="w-[200px]">
-                        <SelectValue placeholder={isLoadingModels ? "加载中..." : "选择模型"}>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          role="combobox"
+                          disabled={isLoadingModels}
+                          className="w-[280px] justify-between bg-transparent"
+                        >
                           {model || (isLoadingModels ? "加载中..." : "选择模型")}
-                        </SelectValue>
-                      </SelectTrigger>
-                      <SelectContent>
-                        {openrouterModels.map((m) => (
-                          <SelectItem key={m.id} value={m.id}>
-                            <div className="flex flex-col gap-0.5">
-                              <span className="font-medium">{m.name || m.id}</span>
-                              {m.context && <span className="text-xs text-muted-foreground">{m.context}</span>}
-                            </div>
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-[280px] p-0" align="start">
+                        <Command>
+                          <CommandInput
+                            placeholder="搜索模型..."
+                            value={modelSearchQuery}
+                            onValueChange={setModelSearchQuery}
+                          />
+                          <CommandList>
+                            <CommandEmpty>未找到模型</CommandEmpty>
+                            <CommandGroup>
+                              {filteredOpenRouterModels.map((m) => (
+                                <CommandItem
+                                  key={m.id}
+                                  value={m.id}
+                                  onSelect={() => {
+                                    setModel(m.id)
+                                    setModelSearchQuery("")
+                                  }}
+                                >
+                                  <div className="flex flex-col gap-0.5">
+                                    <span className="font-medium">{m.name || m.id}</span>
+                                    {m.context_length && (
+                                      <span className="text-xs text-muted-foreground">{m.context_length} tokens</span>
+                                    )}
+                                  </div>
+                                </CommandItem>
+                              ))}
+                            </CommandGroup>
+                          </CommandList>
+                        </Command>
+                      </PopoverContent>
+                    </Popover>
                     <Button variant="ghost" size="sm" onClick={() => setIsCustomModel(true)} title="自定义模型">
                       <Pencil className="size-4" />
                     </Button>
@@ -1875,7 +2189,7 @@ export default function LLMAPITester() {
                       value={model}
                       onChange={(e) => setModel(e.target.value)}
                       placeholder="输入自定义模型 ID"
-                      className="w-[200px]"
+                      className="w-[280px]"
                     />
                     <Button variant="ghost" size="sm" onClick={() => setIsCustomModel(false)} title="返回下拉选择">
                       <List className="size-4" />
@@ -2154,39 +2468,138 @@ export default function LLMAPITester() {
             </CardHeader>
             {isParametersExpanded && (
               <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <Label htmlFor="userMessage">用户消息</Label>
-                      <p className="text-xs text-muted-foreground">输入测试用的消息内容</p>
+                <div className="space-y-4">
+                  {!enablePromptFile && (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <Label htmlFor="userMessage">用户消息</Label>
+                          <p className="text-xs text-muted-foreground">输入测试用的消息内容</p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setIsPromptExpanded(!isPromptExpanded)}
+                        >
+                          {isPromptExpanded ? (
+                            <>
+                              <ChevronUp className="mr-1 h-4 w-4" />
+                              收起
+                            </>
+                          ) : (
+                            <>
+                              <ChevronDown className="mr-1 h-4 w-4" />
+                              展开
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                      <Textarea
+                        id="userMessage"
+                        value={userMessage}
+                        onChange={(e) => setUserMessage(e.target.value)}
+                        placeholder="输入你的提示词..."
+                        rows={3}
+                        className={isPromptExpanded ? "" : "max-h-32 overflow-y-auto"}
+                      />
+                    </>
+                  )}
+
+                  <div className="space-y-2 pt-2">
+                    <div className="flex items-center justify-between">
+                      <Label className="flex items-center gap-1.5">
+                        <ImageIcon className="h-3.5 w-3.5" />
+                        图片附件
+                      </Label>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setShowImageUrlInput(!showImageUrlInput)}
+                        >
+                          <Link className="mr-1 h-3.5 w-3.5" />
+                          添加链接
+                        </Button>
+                        <Button type="button" variant="outline" size="sm" onClick={handleImageFileUpload}>
+                          <Upload className="h-4 w-4 mr-1" />
+                          上传文件
+                        </Button>
+                        <div className="flex items-center gap-2 ml-auto">
+                          <input
+                            type="checkbox"
+                            id="autoReloadImages"
+                            checked={autoReloadImages}
+                            onChange={(e) => setAutoReloadImages(e.target.checked)}
+                            className="h-4 w-4 rounded border-input bg-background accent-primary cursor-pointer"
+                          />
+                          <Label htmlFor="autoReloadImages" className="cursor-pointer font-normal text-sm">
+                            自动重载
+                          </Label>
+                        </div>
+                      </div>
                     </div>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setIsPromptExpanded(!isPromptExpanded)}
-                    >
-                      {isPromptExpanded ? (
-                        <>
-                          <ChevronUp className="mr-1 h-4 w-4" />
-                          收起
-                        </>
-                      ) : (
-                        <>
-                          <ChevronDown className="mr-1 h-4 w-4" />
-                          展开
-                        </>
-                      )}
-                    </Button>
+
+                    {showImageUrlInput && (
+                      <div className="flex gap-2">
+                        <Input
+                          placeholder="输入图片链接 (https://...)"
+                          value={imageUrl}
+                          onChange={(e) => setImageUrl(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              handleAddImageUrl()
+                            }
+                          }}
+                        />
+                        <Button onClick={handleAddImageUrl} size="sm">
+                          添加
+                        </Button>
+                        <Button
+                          onClick={() => {
+                            setShowImageUrlInput(false)
+                            setImageUrl("")
+                          }}
+                          variant="ghost"
+                          size="sm"
+                        >
+                          取消
+                        </Button>
+                      </div>
+                    )}
+
+                    {/* Image previews grid */}
+                    {messageImages.length > 0 && (
+                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+                        {messageImages.map((img) => (
+                          <div key={img.id} className="relative group rounded-md border overflow-hidden">
+                            <img
+                              src={img.type === "url" ? img.url : img.base64}
+                              alt={img.name || "Image"}
+                              className="w-full h-24 object-cover cursor-pointer hover:opacity-80 transition-opacity"
+                              onClick={() => setZoomedImage(img)}
+                            />
+                            <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                              <Button
+                                type="button"
+                                variant="destructive"
+                                size="sm"
+                                onClick={() => handleRemoveImage(img.id)}
+                              >
+                                <X className="h-4 w-4" />
+                              </Button>
+                            </div>
+                            {img.name && (
+                              <div className="absolute bottom-0 left-0 right-0 bg-black/70 text-white text-xs p-1 truncate">
+                                {img.name}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  <Textarea
-                    id="userMessage"
-                    value={userMessage}
-                    onChange={(e) => setUserMessage(e.target.value)}
-                    placeholder="输入你的提示词..."
-                    rows={3}
-                    className={isPromptExpanded ? "" : "max-h-32 overflow-y-auto"}
-                  />
 
                   <div className="space-y-1.5 pt-2">
                     <div className="flex items-center justify-between">
@@ -2218,35 +2631,37 @@ export default function LLMAPITester() {
                         </Label>
                       </div>
                     </div>
-                    <div className="flex gap-2">
-                      <Input
-                        id="promptFilePath"
-                        value={promptFilePath}
-                        onChange={(e) => {
-                          setPromptFilePath(e.target.value)
-                          setIsPromptFromLocalFile(false)
-                          promptFileHandleRef.current = null
-                          setLoadedPromptContent("")
-                        }}
-                        placeholder="https://example.com/prompt.txt 或点击选择本地文件"
-                        className="text-sm flex-1"
-                        disabled={!enablePromptFile}
-                      />
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleLocalFileSelect("prompt")}
-                        disabled={!enablePromptFile}
-                        className="shrink-0"
-                      >
-                        <Upload className="h-4 w-4 mr-1" />
-                        选择文件
-                      </Button>
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      支持 HTTP/HTTPS 链接或本地文件。点击"选择文件"按钮可直接选择本地 .txt 或 .md 文件。
-                    </p>
+                    {enablePromptFile && (
+                      <>
+                        <div className="flex gap-2">
+                          <Input
+                            id="promptFilePath"
+                            value={promptFilePath}
+                            onChange={(e) => {
+                              setPromptFilePath(e.target.value)
+                              setIsPromptFromLocalFile(false)
+                              promptFileHandleRef.current = null
+                              setLoadedPromptContent("")
+                            }}
+                            placeholder="https://example.com/prompt.txt 或点击选择本地文件"
+                            className="text-sm flex-1"
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleLocalFileSelect("prompt")}
+                            className="shrink-0"
+                          >
+                            <Upload className="h-4 w-4 mr-1" />
+                            选择文件
+                          </Button>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          支持 HTTP/HTTPS 链接或本地文件。点击"选择文件"按钮可直接选择本地 .txt 或 .md 文件。
+                        </p>
+                      </>
+                    )}
 
                     {enablePromptFile && loadedPromptContent && (
                       <div className="space-y-1.5 pt-2">
@@ -2303,40 +2718,43 @@ export default function LLMAPITester() {
                   </div>
                 </div>
 
-                {/* System Prompt Input */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <Label htmlFor="systemPrompt">系统提示词</Label>
-                      <p className="text-xs text-muted-foreground">为 AI 设置角色或行为指令</p>
-                    </div>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setIsSystemPromptExpanded(!isSystemPromptExpanded)}
-                    >
-                      {isSystemPromptExpanded ? (
-                        <>
-                          <ChevronUp className="mr-1 h-4 w-4" />
-                          收起
-                        </>
-                      ) : (
-                        <>
-                          <ChevronDown className="mr-1 h-4 w-4" />
-                          展开
-                        </>
-                      )}
-                    </Button>
-                  </div>
-                  <Textarea
-                    id="systemPrompt"
-                    value={systemPrompt}
-                    onChange={(e) => setSystemPrompt(e.target.value)}
-                    placeholder="例如: 你是一个乐于助人的助手。"
-                    rows={2}
-                    className={isSystemPromptExpanded ? "" : "max-h-32 overflow-y-auto"}
-                  />
+                <div className="space-y-4">
+                  {!enableSystemPromptFile && (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <Label htmlFor="systemPrompt">系统提示词</Label>
+                          <p className="text-xs text-muted-foreground">为AI设置角色或行为指令</p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setIsSystemPromptExpanded(!isSystemPromptExpanded)}
+                        >
+                          {isSystemPromptExpanded ? (
+                            <>
+                              <ChevronUp className="mr-1 h-4 w-4" />
+                              收起
+                            </>
+                          ) : (
+                            <>
+                              <ChevronDown className="mr-1 h-4 w-4" />
+                              展开
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                      <Textarea
+                        id="systemPrompt"
+                        value={systemPrompt}
+                        onChange={(e) => setSystemPrompt(e.target.value)}
+                        placeholder="例如: 你是一个乐于助人的助手。"
+                        rows={2}
+                        className={isSystemPromptExpanded ? "" : "max-h-32 overflow-y-auto"}
+                      />
+                    </>
+                  )}
 
                   <div className="space-y-1.5 pt-2">
                     <div className="flex items-center justify-between">
@@ -2368,35 +2786,37 @@ export default function LLMAPITester() {
                         </Label>
                       </div>
                     </div>
-                    <div className="flex gap-2">
-                      <Input
-                        id="systemPromptFilePath"
-                        value={systemPromptFilePath}
-                        onChange={(e) => {
-                          setSystemPromptFilePath(e.target.value)
-                          setIsSystemPromptFromLocalFile(false)
-                          systemPromptFileHandleRef.current = null
-                          setLoadedSystemPromptContent("")
-                        }}
-                        placeholder="https://example.com/system-prompt.txt 或点击选择本地文件"
-                        className="text-sm flex-1"
-                        disabled={!enableSystemPromptFile}
-                      />
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleLocalFileSelect("systemPrompt")}
-                        disabled={!enableSystemPromptFile}
-                        className="shrink-0"
-                      >
-                        <Upload className="h-4 w-4 mr-1" />
-                        选择文件
-                      </Button>
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      支持 HTTP/HTTPS 链接或本地文件。点击"选择文件"按钮可直接选择本地 .txt 或 .md 文件。
-                    </p>
+                    {enableSystemPromptFile && (
+                      <>
+                        <div className="flex gap-2">
+                          <Input
+                            id="systemPromptFilePath"
+                            value={systemPromptFilePath}
+                            onChange={(e) => {
+                              setSystemPromptFilePath(e.target.value)
+                              setIsSystemPromptFromLocalFile(false)
+                              systemPromptFileHandleRef.current = null
+                              setLoadedSystemPromptContent("")
+                            }}
+                            placeholder="https://example.com/system-prompt.txt 或点击选择本地文件"
+                            className="text-sm flex-1"
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleLocalFileSelect("systemPrompt")}
+                            className="shrink-0"
+                          >
+                            <Upload className="h-4 w-4 mr-1" />
+                            选择文件
+                          </Button>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          支持 HTTP/HTTPS 链接或本地文件。点击"选择文件"按钮可直接选择本地 .txt 或 .md 文件。
+                        </p>
+                      </>
+                    )}
 
                     {enableSystemPromptFile && loadedSystemPromptContent && (
                       <div className="space-y-1.5 pt-2">
@@ -2453,7 +2873,7 @@ export default function LLMAPITester() {
                   </div>
                 </div>
 
-                <div className="space-y-4 pt-4">
+                <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <div className="space-y-0.5">
                       <Label>定时配置</Label>
@@ -2866,7 +3286,7 @@ export default function LLMAPITester() {
                                             {expandedCells.has(`response-raw-${item.timestamp}`) ? (
                                               <>
                                                 <ChevronUp className="size-3" />
-                                                展开
+                                                收起
                                               </>
                                             ) : (
                                               <>
@@ -3002,6 +3422,29 @@ export default function LLMAPITester() {
           </div>
         </div>
       </div>
+
+      <Dialog open={!!zoomedImage} onOpenChange={(open) => !open && setZoomedImage(null)}>
+        <DialogContent className="max-w-4xl w-full p-0">
+          {zoomedImage && (
+            <div className="relative w-full">
+              <img
+                src={zoomedImage.type === "url" ? zoomedImage.url : zoomedImage.base64}
+                alt={zoomedImage.name || "Zoomed Image"}
+                className="w-full h-auto max-h-[90vh] object-contain"
+              />
+              {zoomedImage.name && (
+                <div className="absolute bottom-0 left-0 right-0 bg-black/80 text-white p-3">
+                  <p className="text-sm font-medium">{zoomedImage.name}</p>
+                  {zoomedImage.type === "url" && zoomedImage.url && (
+                    <p className="text-xs text-gray-300 truncate">{zoomedImage.url}</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
       <Toaster />
     </div>
   )
