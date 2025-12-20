@@ -347,6 +347,42 @@ const extractImagesFromRequestContent = (requestContent: string): string[] => {
   }
 }
 
+const extractImagesFromResponseContent = (responseContent: string): string[] => {
+  if (!responseContent || responseContent.trim() === "") {
+    return []
+  }
+
+  try {
+    const parsed = JSON.parse(responseContent)
+    const images: string[] = []
+
+    // Handle wrapped response format (with body property)
+    let responseBody = parsed
+    if (parsed.body && typeof parsed.body === "object") {
+      responseBody = parsed.body
+    }
+
+    // Check if it's a standard API response with choices array
+    if (responseBody.choices && Array.isArray(responseBody.choices)) {
+      responseBody.choices.forEach((choice: any) => {
+        // Check for images in message.images array
+        if (choice.message && choice.message.images && Array.isArray(choice.message.images)) {
+          choice.message.images.forEach((img: any) => {
+            if (img.image_url && img.image_url.url && img.image_url.url.startsWith("data:image")) {
+              images.push(img.image_url.url)
+            }
+          })
+        }
+      })
+    }
+
+    return images
+  } catch (error) {
+    console.error("[v0] Error extracting images from response:", error)
+    return []
+  }
+}
+
 const formatRequestContentForDisplay = (requestContent: string): string => {
   try {
     const parsed = JSON.parse(requestContent)
@@ -1987,8 +2023,7 @@ export default function LLMAPITester() {
     }
   }
 
-  const renderContentWithCodeBlocks = (content: string, cellId: string, isExpanded: boolean) => {
-    // Try to detect if content is JSON
+  const renderContentWithCodeBlocks = (content: string, cellId: string, isExpanded: boolean, images?: string[]) => {
     let processedContent = content
     let isJson = false
 
@@ -2008,37 +2043,82 @@ export default function LLMAPITester() {
 
     const parts = processedContent.split(/(```[\s\S]*?```)/g)
 
-    return parts.map((part, index) => {
-      if (part.startsWith("```") && part.endsWith("```")) {
-        const lines = part.split("\n")
-        const language = lines[0].replace("```", "").trim()
-        const codeLines = lines.slice(1, -1)
-        const code = codeLines.join("\n")
-        const lineCount = codeLines.length
-
-        return (
-          <div key={index} className="my-2 rounded-md bg-muted overflow-hidden border relative">
-            {language && <div className="px-3 py-1 text-xs text-muted-foreground bg-muted/50 border-b">{language}</div>}
-            <pre
-              className={`p-3 overflow-x-auto text-xs ${
-                !isExpanded && lineCount > 3 ? "max-h-24 overflow-y-hidden" : ""
-              }`}
-            >
-              <code className="block">{code}</code>
-            </pre>
-            {!isExpanded && lineCount > 3 && (
-              <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-muted to-transparent pointer-events-none" />
-            )}
+    return (
+      <>
+        {images && images.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-2">
+            {images.map((imgUrl, idx) => (
+              <div key={idx} className="relative group rounded border overflow-hidden bg-muted">
+                <img
+                  src={imgUrl || "/placeholder.svg"}
+                  alt={`Generated image ${idx + 1}`}
+                  className="size-20 object-cover cursor-pointer hover:opacity-80 transition-opacity"
+                  onClick={() =>
+                    setZoomedImage({
+                      id: `response-${cellId}-${idx}`,
+                      type: "url",
+                      base64: imgUrl,
+                    })
+                  }
+                  title="点击查看大图"
+                />
+                <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={() =>
+                      setZoomedImage({
+                        id: `response-${cellId}-${idx}`,
+                        type: "url",
+                        base64: imgUrl,
+                      })
+                    }
+                    title="放大查看"
+                  >
+                    <ZoomIn className="h-3 w-3" />
+                  </Button>
+                </div>
+              </div>
+            ))}
           </div>
-        )
-      }
-      return (
-        <span key={index} className={`${!isExpanded && part.trim().length > 100 ? "line-clamp-2" : ""}`}>
-          {part}
-        </span>
-      )
-    })
+        )}
+        {parts.map((part, index) => {
+          if (part.startsWith("```") && part.endsWith("```")) {
+            const lines = part.split("\n")
+            const language = lines[0].replace("```", "").trim()
+            const codeLines = lines.slice(1, -1)
+            const code = codeLines.join("\n")
+            const lineCount = codeLines.length
+
+            return (
+              <div key={index} className="my-2 rounded-md bg-muted overflow-hidden border relative">
+                {language && (
+                  <div className="px-3 py-1 text-xs text-muted-foreground bg-muted/50 border-b">{language}</div>
+                )}
+                <pre
+                  className={`p-3 overflow-x-auto text-xs ${
+                    !isExpanded && lineCount > 3 ? "max-h-24 overflow-y-hidden" : ""
+                  }`}
+                >
+                  <code className="block">{code}</code>
+                </pre>
+                {!isExpanded && lineCount > 3 && (
+                  <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-muted to-transparent pointer-events-none" />
+                )}
+              </div>
+            )
+          }
+          return (
+            <span key={index} className={`${!isExpanded && part.trim().length > 100 ? "line-clamp-2" : ""}`}>
+              {part}
+            </span>
+          )
+        })}
+      </>
+    )
   }
+  // </CHANGE>
 
   const expandAllHistory = false // Placeholder to resolve lint error, can be replaced with actual state if needed.
 
@@ -2307,10 +2387,9 @@ export default function LLMAPITester() {
     <div className="min-h-screen bg-background">
       <nav className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="flex h-16 items-center gap-4 px-4 md:px-8">
-          {/* Removed h1 and added Zap icon and new h1 */}
+          {/* CHANGE: Removed "LLM API 测试工具" text, keeping only the icon */}
           <div className="flex items-center gap-2">
             <Zap className="size-6 text-primary" />
-            <h1 className="text-balance text-xl font-bold tracking-tight">LLM API 测试工具</h1>
             {probeStatus !== "idle" && (
               <div className="ml-2 flex items-center gap-1.5">
                 <div
@@ -3358,6 +3437,9 @@ export default function LLMAPITester() {
                             const requestContentId = `request-${item.timestamp}`
                             const responseContentId = `response-${item.timestamp}`
 
+                            // Extract images from response content
+                            const responseImages = extractImagesFromResponseContent(item.responseRaw)
+
                             return (
                               <TableRow key={item.timestamp} className="hover:bg-muted/50">
                                 <TableCell className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap align-top">
@@ -3514,6 +3596,7 @@ export default function LLMAPITester() {
                                         item.responseContent,
                                         responseContentId,
                                         expandResponseContent || expandedCells.has(responseContentId),
+                                        responseImages, // Pass extracted images
                                       )}
                                     </div>
                                     {(() => {
