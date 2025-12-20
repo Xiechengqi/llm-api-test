@@ -516,6 +516,8 @@ export default function LLMAPITester() {
   useEffect(() => {
     const loadData = async () => {
       try {
+        console.log("[v0] Loading data from storage...")
+
         // Load settings from localStorage (without images)
         const saved = localStorage.getItem("llm-api-test-settings")
         if (saved) {
@@ -554,15 +556,25 @@ export default function LLMAPITester() {
           if (settings.selectedInputModalities) setSelectedInputModalities(settings.selectedInputModalities)
           if (settings.selectedOutputModalities) setSelectedOutputModalities(settings.selectedOutputModalities)
           if (settings.modelSearchQuery !== undefined) setModelSearchQuery(settings.modelSearchQuery)
-          if (settings.availableInputModalities) setAvailableInputModalities(settings.availableInputModalities) // Changed to array
-          if (settings.availableOutputModalities) setAvailableOutputModalities(settings.availableOutputModalities) // Changed to array
+          if (settings.availableInputModalities) setAvailableInputModalities(settings.availableInputModalities)
+          if (settings.availableOutputModalities) setAvailableOutputModalities(settings.availableOutputModalities)
           if (settings.imageUrl !== undefined) setImageUrl(settings.imageUrl)
           if (settings.showImageUrlInput !== undefined) setShowImageUrlInput(settings.showImageUrlInput)
           if (settings.isAddingImageUrl !== undefined) setIsAddingImageUrl(settings.isAddingImageUrl)
         }
 
+        console.log("[v0] Loading images from IndexedDB...")
+        const imagesFromDB = await loadImagesFromDB()
+        console.log("[v0] Loaded images from IndexedDB:", imagesFromDB.length, "images")
+        if (imagesFromDB.length > 0) {
+          setMessageImages(imagesFromDB)
+          console.log("[v0] Set messageImages state with", imagesFromDB.length, "images")
+        }
+
+        console.log("[v0] Loading history from IndexedDB...")
         const historyFromDB = await loadHistoryFromDB()
         if (historyFromDB.length > 0) {
+          console.log("[v0] Loaded history from IndexedDB:", historyFromDB.length, "entries")
           setHistory(historyFromDB)
         } else {
           // Fallback to localStorage if no data in IndexedDB
@@ -573,11 +585,6 @@ export default function LLMAPITester() {
             // Save to IndexedDB for future use
             await saveHistoryToDB(parsedHistory)
           }
-        }
-
-        const imagesFromDB = await loadImagesFromDB()
-        if (imagesFromDB.length > 0) {
-          setMessageImages(imagesFromDB)
         }
 
         // Load model history from localStorage
@@ -691,6 +698,7 @@ export default function LLMAPITester() {
 
   useEffect(() => {
     if (typeof window !== "undefined") {
+      console.log("[v0] Saving images to IndexedDB, count:", messageImages.length)
       saveImagesToDB(messageImages).catch((error) => {
         console.error("[v0] Failed to save images to IndexedDB:", error)
       })
