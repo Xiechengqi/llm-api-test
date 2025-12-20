@@ -26,6 +26,7 @@ import {
   ImageIcon,
   X,
   Link,
+  ZoomIn,
 } from "lucide-react" // Import Copy, Pencil, List, Eye, EyeOff, RotateCcw, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Calendar, Check, Clock, X, Play, StopCircle icons
 
 import { useState, useEffect, useRef, useMemo } from "react" // Import useRef, useMemo
@@ -292,6 +293,73 @@ interface MessageImage {
   base64?: string // For file type
   mimeType?: string // For file type
   name?: string // Original file name
+}
+
+const extractImagesFromRequestContent = (requestContent: string): string[] => {
+  try {
+    const parsed = JSON.parse(requestContent)
+    const images: string[] = []
+
+    // Handle full messages array format
+    if (Array.isArray(parsed)) {
+      parsed.forEach((message: any) => {
+        // Check if this is a message object with content array
+        if (message.content && Array.isArray(message.content)) {
+          message.content.forEach((item: any) => {
+            if (item.type === "image_url" && item.image_url?.url) {
+              const url = item.image_url.url
+              // Accept both regular URLs and data:image base64 strings
+              if (url.startsWith("data:image/") || url.startsWith("http://") || url.startsWith("https://")) {
+                images.push(url)
+              }
+            }
+          })
+        } else if (message.content && typeof message.content === "string") {
+          // This part is for the old format where userMessage was a string and images were implicitly handled if any.
+          // However, the new format uses message.content array.
+          // This fallback might be needed if mixed formats are encountered or for older history entries.
+          // For now, we prioritize the structured format.
+        }
+      })
+    }
+
+    return images
+  } catch (error) {
+    console.error("[v0] Error parsing request content for images:", error)
+    return []
+  }
+}
+
+const formatRequestContentForDisplay = (requestContent: string): string => {
+  try {
+    const parsed = JSON.parse(requestContent)
+
+    // Handle full messages array format
+    if (Array.isArray(parsed)) {
+      let textParts: string[] = []
+
+      parsed.forEach((message: any) => {
+        if (message.content) {
+          if (typeof message.content === "string") {
+            // For older history items or messages without explicit image_url
+            textParts.push(message.content)
+          } else if (Array.isArray(message.content)) {
+            // For messages with explicit content array (multimodal)
+            const messageParts = message.content
+              .filter((item: any) => item.type === "text")
+              .map((item: any) => item.text)
+            textParts = textParts.concat(messageParts)
+          }
+        }
+      })
+
+      return textParts.join("\n")
+    }
+
+    return requestContent
+  } catch (error) {
+    return requestContent
+  }
 }
 
 export default function LLMAPITester() {
@@ -922,6 +990,64 @@ export default function LLMAPITester() {
     }
   }, [enableSystemPromptFile, systemPromptFilePath, isSystemPromptFromLocalFile])
 
+  const handleReloadImages = async (): Promise<MessageImage[]> => {
+    if (messageImages.length === 0) return messageImages
+
+    console.log("[v0] Reloading images and clearing cache...")
+
+    const reloadedImages: MessageImage[] = []
+
+    for (const img of messageImages) {
+      if (img.type === "url" && img.url) {
+        try {
+          // Add cache-busting parameter to force reload
+          const urlWithCacheBust = img.url.includes("?") ? `${img.url}&_t=${Date.now()}` : `${img.url}?_t=${Date.now()}`
+
+          const response = await fetch(urlWithCacheBust, {
+            cache: "no-store", // Force no caching
+          })
+
+          if (!response.ok) {
+            console.error(`[v0] Failed to reload image from ${img.url}:`, response.statusText)
+            // Keep the old image if reload fails
+            reloadedImages.push(img)
+            continue
+          }
+
+          const blob = await response.blob()
+
+          // Convert blob to base64
+          const base64 = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader()
+            reader.onload = (event) => resolve(event.target?.result as string)
+            reader.onerror = reject
+            reader.readAsDataURL(blob)
+          })
+
+          // Create updated image with new base64 data
+          reloadedImages.push({
+            ...img,
+            base64: base64,
+            mimeType: blob.type,
+          })
+
+          console.log(`[v0] Reloaded image from ${img.url}`)
+        } catch (error) {
+          console.error(`[v0] Error reloading image from ${img.url}:`, error)
+          // Keep the old image if reload fails
+          reloadedImages.push(img)
+        }
+      } else {
+        // For file uploads, keep as-is (no URL to reload from)
+        reloadedImages.push(img)
+      }
+    }
+
+    setMessageImages(reloadedImages)
+    console.log("[v0] Image reload complete")
+    return reloadedImages
+  }
+
   const runProbeTest = async () => {
     if (!apiKey || !model || !fullApiPath) return // Added fullApiPath check
 
@@ -1096,20 +1222,49 @@ export default function LLMAPITester() {
   }, [provider])
 
   const handleTest = async () => {
-    if (!apiKey) {
-      setError("Please provide an API key")
-      toast({
-        variant: "destructive",
-        title: "错误",
-        description: "请提供 API Key",
-      })
-      return
-    }
+    if (loading) return // Prevent multiple simultaneous tests
 
     setLoading(true)
     setError("")
+    setRequestData("")
     setResponseData("")
     setResponseDuration(null)
+    // Removed setRequestStartTime(null) as it's not used here.
+    
+    try {
+      // CHANGE: Store reloaded images in a variable to use in the API request
+      let currentImages = messageImages
+
+      if (autoReloadImages && messageImages.some((img) => img.type === "url")) {
+        console.log("[v0] Auto-reloading images before test...")
+
+        // CHANGE: Show notification that images are being reloaded
+        toast({
+          title: "正在重载图片",
+          description: `正在重新加载 ${messageImages.filter((img) => img.type === "url").length} 张图片...`,
+          duration: 2000,
+        })
+
+        currentImages = await handleReloadImages()
+
+        // CHANGE: Show notification that reload is complete
+        toast({
+          title: "图片重载完成",
+          description: "所有图片已更新，开始测试...",
+          className: "bg-green-50 border-green-200",
+          duration: 2000,
+        })
+      }
+
+      if (!apiKey) {
+        setError("Please provide an API key")
+        toast({
+          variant: "destructive",
+          title: "错误",
+          description: "请提供 API Key",
+        })
+        return
+      }
 
     const modelToUse = model || DEFAULT_VALUES.model
 
@@ -1220,7 +1375,8 @@ export default function LLMAPITester() {
 
     let userMessageContent: any = finalUserMessage
 
-    if (messageImages.length > 0) {
+    // CHANGE: Use currentImages instead of messageImages to ensure we use the reloaded images
+    if (currentImages.length > 0) {
       // If there are images, use the multi-modal format
       const contentParts: any[] = [
         {
@@ -1229,16 +1385,9 @@ export default function LLMAPITester() {
         },
       ]
 
-      // Add all images
-      messageImages.forEach((img) => {
-        if (img.type === "url" && img.url) {
-          contentParts.push({
-            type: "image_url",
-            image_url: {
-              url: img.url,
-            },
-          })
-        } else if (img.type === "file" && img.base64) {
+      currentImages.forEach((img) => {
+        if (img.base64) {
+          // Use base64 data for all images (both URL and file types)
           contentParts.push({
             type: "image_url",
             image_url: {
@@ -1327,10 +1476,7 @@ export default function LLMAPITester() {
       )
       setResponseData(formattedResponse)
 
-      const requestContent = [...messages]
-        .reverse()
-        .map((msg) => `${msg.role}: ${msg.content}`)
-        .join("\n") // user first, then system
+      const requestContent = JSON.stringify(messages) // Store the actual messages array
 
       let responseContent = ""
       const messageContent = parsedResponse?.choices?.[0]?.message?.content
@@ -1446,6 +1592,7 @@ export default function LLMAPITester() {
         }
         return updated
       })
+    }
     } finally {
       setLoading(false)
     }
@@ -1833,7 +1980,7 @@ export default function LLMAPITester() {
         // Try to verify it's valid JSON
         JSON.parse(trimmed)
         // If successfully parsed, wrap original content in json code block without formatting
-        processedContent = "```json\n" + trimmed + "\n```"
+        processedContent = "\`\`\`json\n" + trimmed + "\n\`\`\`"
         isJson = true
       }
     } catch (e) {
@@ -1843,9 +1990,9 @@ export default function LLMAPITester() {
     const parts = processedContent.split(/(```[\s\S]*?```)/g)
 
     return parts.map((part, index) => {
-      if (part.startsWith("```") && part.endsWith("```")) {
+      if (part.startsWith("\`\`\`") && part.endsWith("\`\`\`")) {
         const lines = part.split("\n")
-        const language = lines[0].replace("```", "").trim()
+        const language = lines[0].replace("\`\`\`", "").trim()
         const codeLines = lines.slice(1, -1)
         const code = codeLines.join("\n")
         const lineCount = codeLines.length
@@ -1874,7 +2021,6 @@ export default function LLMAPITester() {
     })
   }
 
-  // Fixed: Corrected closing tag for Table and removed undeclared variable expandAllHistory
   const expandAllHistory = false // Placeholder to resolve lint error, can be replaced with actual state if needed.
 
   const applyHistoryItem = (item: ModelHistoryItem) => {
@@ -1980,7 +2126,7 @@ export default function LLMAPITester() {
     return filtered
   }, [openrouterModels, selectedInputModalities, selectedOutputModalities, modelSearchQuery])
 
-  const handleAddImageUrl = () => {
+  const handleAddImageUrl = async () => {
     if (!imageUrl.trim()) {
       toast({
         variant: "destructive",
@@ -1990,19 +2136,76 @@ export default function LLMAPITester() {
       return
     }
 
-    const newImage: MessageImage = {
-      id: Date.now().toString(),
-      type: "url",
-      url: imageUrl.trim(),
-    }
+    try {
+      const urlWithCacheBust = imageUrl.trim().includes("?")
+        ? `${imageUrl.trim()}&_t=${Date.now()}`
+        : `${imageUrl.trim()}?_t=${Date.now()}`
 
-    setMessageImages((prev) => [...prev, newImage])
-    setImageUrl("")
-    setShowImageUrlInput(false)
-    toast({
-      title: "成功",
-      description: "图片已添加",
-    })
+      const response = await fetch(urlWithCacheBust, {
+        cache: "no-store", // Force no caching
+      })
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+      }
+
+      const blob = await response.blob()
+
+      if (!blob.type.startsWith("image/")) {
+        toast({
+          variant: "destructive",
+          title: "错误",
+          description: "URL 不是有效的图片",
+        })
+        return
+      }
+
+      const reader = new FileReader()
+      reader.onload = (event) => {
+        const base64String = event.target?.result as string
+
+        const newImage: MessageImage = {
+          id: Date.now().toString(),
+          type: "url",
+          url: imageUrl.trim(), // Store original URL (without cache-bust parameter)
+          base64: base64String,
+          mimeType: blob.type,
+        }
+
+        setMessageImages((prev) => [...prev, newImage])
+        setImageUrl("")
+        setShowImageUrlInput(false)
+        toast({
+          title: "成功",
+          description: "图片已加载并添加",
+        })
+      }
+
+      reader.onerror = () => {
+        toast({
+          variant: "destructive",
+          title: "错误",
+          description: "转换图片失败",
+        })
+      }
+
+      reader.readAsDataURL(blob)
+    } catch (error) {
+      console.error("[v0] Error loading image from URL:", error)
+      let errorMessage = "无法加载图片"
+
+      if (error instanceof TypeError && error.message.includes("fetch")) {
+        errorMessage = "跨域访问被阻止（CORS）。请确保图片服务器支持 CORS。"
+      } else if (error instanceof Error) {
+        errorMessage = error.message
+      }
+
+      toast({
+        variant: "destructive",
+        title: "加载图片失败",
+        description: errorMessage,
+      })
+    }
   }
 
   const handleImageFileUpload = async () => {
@@ -2074,6 +2277,12 @@ export default function LLMAPITester() {
   const handleRemoveImage = (imageId: string) => {
     setMessageImages((prev) => prev.filter((img) => img.id !== imageId))
   }
+
+  useEffect(() => {
+    if (autoReloadImages && messageImages.some((img) => img.type === "url")) {
+      console.log("[v0] Auto-reload images is enabled, images will be reloaded before next test")
+    }
+  }, [autoReloadImages, messageImages])
 
   return (
     <div className="min-h-screen bg-background">
@@ -2575,26 +2784,31 @@ export default function LLMAPITester() {
                         {messageImages.map((img) => (
                           <div key={img.id} className="relative group rounded-md border overflow-hidden">
                             <img
-                              src={img.type === "url" ? img.url : img.base64}
+                              src={img.base64 || img.url}
                               alt={img.name || "Image"}
                               className="w-full h-24 object-cover cursor-pointer hover:opacity-80 transition-opacity"
                               onClick={() => setZoomedImage(img)}
                             />
-                            <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                            <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                              <Button
+                                type="button"
+                                variant="secondary"
+                                size="sm"
+                                onClick={() => setZoomedImage(img)}
+                                title="放大查看"
+                              >
+                                <ZoomIn className="h-4 w-4" />
+                              </Button>
                               <Button
                                 type="button"
                                 variant="destructive"
                                 size="sm"
                                 onClick={() => handleRemoveImage(img.id)}
+                                title="删除图片"
                               >
                                 <X className="h-4 w-4" />
                               </Button>
                             </div>
-                            {img.name && (
-                              <div className="absolute bottom-0 left-0 right-0 bg-black/70 text-white text-xs p-1 truncate">
-                                {img.name}
-                              </div>
-                            )}
                           </div>
                         ))}
                       </div>
@@ -2603,7 +2817,7 @@ export default function LLMAPITester() {
 
                   <div className="space-y-1.5 pt-2">
                     <div className="flex items-center justify-between">
-                      <Label htmlFor="promptFilePath" className="flex items-center gap-1.5">
+                      <Label className="flex items-center gap-1.5">
                         <FileText className="h-3.5 w-3.5" />
                         从外部加载用户消息
                       </Label>
@@ -2716,160 +2930,160 @@ export default function LLMAPITester() {
                       </div>
                     )}
                   </div>
-                </div>
 
-                <div className="space-y-4">
-                  {!enableSystemPromptFile && (
-                    <>
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <Label htmlFor="systemPrompt">系统提示词</Label>
-                          <p className="text-xs text-muted-foreground">为AI设置角色或行为指令</p>
-                        </div>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setIsSystemPromptExpanded(!isSystemPromptExpanded)}
-                        >
-                          {isSystemPromptExpanded ? (
-                            <>
-                              <ChevronUp className="mr-1 h-4 w-4" />
-                              收起
-                            </>
-                          ) : (
-                            <>
-                              <ChevronDown className="mr-1 h-4 w-4" />
-                              展开
-                            </>
-                          )}
-                        </Button>
-                      </div>
-                      <Textarea
-                        id="systemPrompt"
-                        value={systemPrompt}
-                        onChange={(e) => setSystemPrompt(e.target.value)}
-                        placeholder="例如: 你是一个乐于助人的助手。"
-                        rows={2}
-                        className={isSystemPromptExpanded ? "" : "max-h-32 overflow-y-auto"}
-                      />
-                    </>
-                  )}
-
-                  <div className="space-y-1.5 pt-2">
-                    <div className="flex items-center justify-between">
-                      <Label htmlFor="systemPromptFilePath" className="flex items-center gap-1.5">
-                        <FileText className="h-3.5 w-3.5" />
-                        从外部加载系统提示词
-                      </Label>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          id="enableSystemPromptFile"
-                          checked={enableSystemPromptFile}
-                          onChange={(e) => setEnableSystemPromptFile(e.target.checked)}
-                          className="h-4 w-4 rounded border-input bg-background accent-primary cursor-pointer"
-                        />
-                        <Label htmlFor="enableSystemPromptFile" className="cursor-pointer font-normal text-sm">
-                          启用
-                        </Label>
-                        <input
-                          type="checkbox"
-                          id="autoReloadSystemPrompt"
-                          checked={autoReloadSystemPrompt}
-                          onChange={(e) => setAutoReloadSystemPrompt(e.target.checked)}
-                          disabled={!enableSystemPromptFile}
-                          className="h-4 w-4 rounded border-input bg-background accent-primary cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                        />
-                        <Label htmlFor="autoReloadSystemPrompt" className="cursor-pointer font-normal text-sm">
-                          自动重载
-                        </Label>
-                      </div>
-                    </div>
-                    {enableSystemPromptFile && (
+                  <div className="space-y-4">
+                    {!enableSystemPromptFile && (
                       <>
-                        <div className="flex gap-2">
-                          <Input
-                            id="systemPromptFilePath"
-                            value={systemPromptFilePath}
-                            onChange={(e) => {
-                              setSystemPromptFilePath(e.target.value)
-                              setIsSystemPromptFromLocalFile(false)
-                              systemPromptFileHandleRef.current = null
-                              setLoadedSystemPromptContent("")
-                            }}
-                            placeholder="https://example.com/system-prompt.txt 或点击选择本地文件"
-                            className="text-sm flex-1"
-                          />
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <Label htmlFor="systemPrompt">系统提示词</Label>
+                            <p className="text-xs text-muted-foreground">为AI设置角色或行为指令</p>
+                          </div>
                           <Button
                             type="button"
-                            variant="outline"
+                            variant="ghost"
                             size="sm"
-                            onClick={() => handleLocalFileSelect("systemPrompt")}
-                            className="shrink-0"
+                            onClick={() => setIsSystemPromptExpanded(!isSystemPromptExpanded)}
                           >
-                            <Upload className="h-4 w-4 mr-1" />
-                            选择文件
+                            {isSystemPromptExpanded ? (
+                              <>
+                                <ChevronUp className="mr-1 h-4 w-4" />
+                                收起
+                              </>
+                            ) : (
+                              <>
+                                <ChevronDown className="mr-1 h-4 w-4" />
+                                展开
+                              </>
+                            )}
                           </Button>
                         </div>
-                        <p className="text-xs text-muted-foreground">
-                          支持 HTTP/HTTPS 链接或本地文件。点击"选择文件"按钮可直接选择本地 .txt 或 .md 文件。
-                        </p>
+                        <Textarea
+                          id="systemPrompt"
+                          value={systemPrompt}
+                          onChange={(e) => setSystemPrompt(e.target.value)}
+                          placeholder="例如: 你是一个乐于助人的助手。"
+                          rows={2}
+                          className={isSystemPromptExpanded ? "" : "max-h-32 overflow-y-auto"}
+                        />
                       </>
                     )}
 
-                    {enableSystemPromptFile && loadedSystemPromptContent && (
-                      <div className="space-y-1.5 pt-2">
-                        <div className="flex items-center justify-between">
-                          <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
-                            外部加载的系统提示词预览
-                            {isSystemPromptFromLocalFile && (
-                              <span className="bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded text-[10px]">
-                                本地文件
-                              </span>
-                            )}
+                    <div className="space-y-1.5 pt-2">
+                      <div className="flex items-center justify-between">
+                        <Label htmlFor="systemPromptFilePath" className="flex items-center gap-1.5">
+                          <FileText className="h-3.5 w-3.5" />
+                          从外部加载系统提示词
+                        </Label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            id="enableSystemPromptFile"
+                            checked={enableSystemPromptFile}
+                            onChange={(e) => setEnableSystemPromptFile(e.target.checked)}
+                            className="h-4 w-4 rounded border-input bg-background accent-primary cursor-pointer"
+                          />
+                          <Label htmlFor="enableSystemPromptFile" className="cursor-pointer font-normal text-sm">
+                            启用
                           </Label>
-                          <div className="flex items-center gap-1">
-                            {isSystemPromptFromLocalFile && systemPromptFileHandleRef.current && (
+                          <input
+                            type="checkbox"
+                            id="autoReloadSystemPrompt"
+                            checked={autoReloadSystemPrompt}
+                            onChange={(e) => setAutoReloadSystemPrompt(e.target.checked)}
+                            disabled={!enableSystemPromptFile}
+                            className="h-4 w-4 rounded border-input bg-background accent-primary cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                          />
+                          <Label htmlFor="autoReloadSystemPrompt" className="cursor-pointer font-normal text-sm">
+                            自动重载
+                          </Label>
+                        </div>
+                      </div>
+                      {enableSystemPromptFile && (
+                        <>
+                          <div className="flex gap-2">
+                            <Input
+                              id="systemPromptFilePath"
+                              value={systemPromptFilePath}
+                              onChange={(e) => {
+                                setSystemPromptFilePath(e.target.value)
+                                setIsSystemPromptFromLocalFile(false)
+                                systemPromptFileHandleRef.current = null
+                                setLoadedSystemPromptContent("")
+                              }}
+                              placeholder="https://example.com/system-prompt.txt 或点击选择本地文件"
+                              className="text-sm flex-1"
+                            />
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleLocalFileSelect("systemPrompt")}
+                              className="shrink-0"
+                            >
+                              <Upload className="h-4 w-4 mr-1" />
+                              选择文件
+                            </Button>
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            支持 HTTP/HTTPS 链接或本地文件。点击"选择文件"按钮可直接选择本地 .txt 或 .md 文件。
+                          </p>
+                        </>
+                      )}
+
+                      {enableSystemPromptFile && loadedSystemPromptContent && (
+                        <div className="space-y-1.5 pt-2">
+                          <div className="flex items-center justify-between">
+                            <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
+                              外部加载的系统提示词预览
+                              {isSystemPromptFromLocalFile && (
+                                <span className="bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded text-[10px]">
+                                  本地文件
+                                </span>
+                              )}
+                            </Label>
+                            <div className="flex items-center gap-1">
+                              {isSystemPromptFromLocalFile && systemPromptFileHandleRef.current && (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => reloadLocalFile("systemPrompt")}
+                                  title="重新加载文件"
+                                >
+                                  <RotateCcw className="h-4 w-4" />
+                                </Button>
+                              )}
                               <Button
                                 type="button"
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => reloadLocalFile("systemPrompt")}
-                                title="重新加载文件"
+                                onClick={() => setIsExternalSystemPromptExpanded(!isExternalSystemPromptExpanded)}
                               >
-                                <RotateCcw className="h-4 w-4" />
+                                {isExternalSystemPromptExpanded ? (
+                                  <>
+                                    <ChevronUp className="mr-1 h-4 w-4" />
+                                    收起
+                                  </>
+                                ) : (
+                                  <>
+                                    <ChevronDown className="mr-1 h-4 w-4" />
+                                    展开
+                                  </>
+                                )}
                               </Button>
-                            )}
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => setIsExternalSystemPromptExpanded(!isExternalSystemPromptExpanded)}
-                            >
-                              {isExternalSystemPromptExpanded ? (
-                                <>
-                                  <ChevronUp className="mr-1 h-4 w-4" />
-                                  收起
-                                </>
-                              ) : (
-                                <>
-                                  <ChevronDown className="mr-1 h-4 w-4" />
-                                  展开
-                                </>
-                              )}
-                            </Button>
+                            </div>
                           </div>
+                          <Textarea
+                            value={loadedSystemPromptContent}
+                            readOnly
+                            className={`bg-muted/50 text-sm font-mono resize-none cursor-default overflow-y-auto transition-all duration-200 ${
+                              isExternalSystemPromptExpanded ? "h-60" : "h-20"
+                            }`}
+                          />
                         </div>
-                        <Textarea
-                          value={loadedSystemPromptContent}
-                          readOnly
-                          className={`bg-muted/50 text-sm font-mono resize-none cursor-default overflow-y-auto transition-all duration-200 ${
-                            isExternalSystemPromptExpanded ? "h-60" : "h-20"
-                          }`}
-                        />
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </div>
                 </div>
 
@@ -3078,9 +3292,8 @@ export default function LLMAPITester() {
                       <Table>
                         <TableHeader>
                           <TableRow>
-                            <TableHead className="w-[140px]">时间</TableHead>
-                            <TableHead className="w-[160px]">模型</TableHead>
-                            <TableHead className="w-[100px]">用时</TableHead>
+                            <TableHead className="w-[140px]">时间/用时</TableHead>
+                            <TableHead className="w-[120px]">模型</TableHead>
                             <TableHead>
                               <div className="flex items-center gap-2">
                                 <span>请求 Content</span>
@@ -3120,26 +3333,79 @@ export default function LLMAPITester() {
                             return (
                               <TableRow key={item.timestamp} className="hover:bg-muted/50">
                                 <TableCell className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap align-top">
-                                  {new Date(item.timestamp).toLocaleString("zh-CN", {
-                                    month: "2-digit",
-                                    day: "2-digit",
-                                    hour: "2-digit",
-                                    minute: "2-digit",
-                                    second: "2-digit",
-                                  })}
+                                  <div className="flex flex-col gap-0.5">
+                                    <span>
+                                      {new Date(item.timestamp).toLocaleString("zh-CN", {
+                                        month: "2-digit",
+                                        day: "2-digit",
+                                        hour: "2-digit",
+                                        minute: "2-digit",
+                                        second: "2-digit",
+                                      })}
+                                    </span>
+                                    <span className="font-mono text-[10px]">
+                                      {item.duration !== undefined && item.duration !== null ? (
+                                        <>{item.duration}ms</>
+                                      ) : (
+                                        <span className="text-muted-foreground/50">-</span>
+                                      )}
+                                    </span>
+                                  </div>
                                 </TableCell>
                                 <TableCell className="px-4 py-3 text-xs align-top">
-                                  <span className="font-mono">{item.model}</span>
+                                  <span className="font-mono block truncate" title={item.model}>
+                                    {item.model}
+                                  </span>
                                 </TableCell>
-                                <TableCell className="px-4 py-3 text-xs align-top">
-                                  {item.duration !== undefined && item.duration !== null ? (
-                                    <span className="font-mono text-muted-foreground">{item.duration}ms</span>
-                                  ) : (
-                                    <span className="text-muted-foreground/50">-</span>
-                                  )}
-                                </TableCell>
+
                                 <TableCell>
-                                  <div className="max-w-xl">
+                                  <div className="max-w-xl space-y-2">
+                                    {(() => {
+                                      const images = extractImagesFromRequestContent(item.requestContent)
+                                      if (images.length > 0) {
+                                        return (
+                                          <div className="grid grid-cols-3 gap-1 mb-2">
+                                            {images.map((imgUrl, idx) => (
+                                              <div
+                                                key={idx}
+                                                className="relative group rounded border overflow-hidden bg-muted"
+                                              >
+                                                <img
+                                                  src={imgUrl || "/placeholder.svg"}
+                                                  alt={`Request image ${idx + 1}`}
+                                                  className="w-full h-16 object-cover cursor-pointer hover:opacity-80 transition-opacity"
+                                                  onClick={() =>
+                                                    setZoomedImage({
+                                                      id: `history-${item.timestamp}-${idx}`,
+                                                      type: "url",
+                                                      base64: imgUrl,
+                                                    })
+                                                  }
+                                                />
+                                                <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                                  <Button
+                                                    type="button"
+                                                    variant="secondary"
+                                                    size="sm"
+                                                    onClick={() =>
+                                                      setZoomedImage({
+                                                        id: `history-${item.timestamp}-${idx}`,
+                                                        type: "url",
+                                                        base64: imgUrl,
+                                                      })
+                                                    }
+                                                    title="放大查看"
+                                                  >
+                                                    <ZoomIn className="h-3 w-3" />
+                                                  </Button>
+                                                </div>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        )
+                                      }
+                                      return null
+                                    })()}
                                     <pre
                                       className={`text-xs whitespace-pre-wrap break-words ${
                                         !expandRequestContent && !expandedCells.has(requestContentId)
@@ -3147,7 +3413,7 @@ export default function LLMAPITester() {
                                           : ""
                                       }`}
                                     >
-                                      {item.requestContent}
+                                      {formatRequestContentForDisplay(item.requestContent)}
                                     </pre>
                                     {!expandRequestContent && item.requestContent.length > 100 && (
                                       <button
@@ -3223,10 +3489,10 @@ export default function LLMAPITester() {
                                       )}
                                     </div>
                                     {(() => {
-                                      const hasCodeBlock = item.responseContent.includes("```")
+                                      const hasCodeBlock = item.responseContent.includes("\`\`\`")
                                       const codeBlockLines = hasCodeBlock
                                         ? (item.responseContent
-                                            .split("```")
+                                            .split("\`\`\`")
                                             .filter((_, i) => i % 2 === 1)[0]
                                             ?.split("\n")?.length ?? 0)
                                         : 0
@@ -3424,22 +3690,28 @@ export default function LLMAPITester() {
       </div>
 
       <Dialog open={!!zoomedImage} onOpenChange={(open) => !open && setZoomedImage(null)}>
-        <DialogContent className="max-w-4xl w-full p-0">
+        <DialogContent className="max-w-5xl w-full p-0 overflow-hidden">
           {zoomedImage && (
-            <div className="relative w-full">
-              <img
-                src={zoomedImage.type === "url" ? zoomedImage.url : zoomedImage.base64}
-                alt={zoomedImage.name || "Zoomed Image"}
-                className="w-full h-auto max-h-[90vh] object-contain"
-              />
-              {zoomedImage.name && (
-                <div className="absolute bottom-0 left-0 right-0 bg-black/80 text-white p-3">
-                  <p className="text-sm font-medium">{zoomedImage.name}</p>
+            <div className="relative w-full flex flex-col">
+              <div className="flex-1 flex items-center justify-center bg-black/90 p-4">
+                <img
+                  src={zoomedImage.base64 || zoomedImage.url}
+                  alt={zoomedImage.name || "Zoomed Image"}
+                  className="max-w-full max-h-[80vh] object-contain"
+                />
+              </div>
+              <div className="bg-background border-t p-3 flex items-center justify-between">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium truncate">{zoomedImage.name || "未命名图片"}</p>
                   {zoomedImage.type === "url" && zoomedImage.url && (
-                    <p className="text-xs text-gray-300 truncate">{zoomedImage.url}</p>
+                    <p className="text-xs text-muted-foreground truncate">{zoomedImage.url}</p>
                   )}
+                  {zoomedImage.type === "file" && <p className="text-xs text-muted-foreground">本地上传图片</p>}
                 </div>
-              )}
+                <Button variant="outline" size="sm" onClick={() => setZoomedImage(null)}>
+                  关闭
+                </Button>
+              </div>
             </div>
           )}
         </DialogContent>
