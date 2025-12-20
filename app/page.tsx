@@ -46,6 +46,16 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { SimpleMultiSelect } from "@/components/ui/simple-multi-select"
 import { Dialog, DialogContent } from "@/components/ui/dialog"
 
+import {
+  initDB,
+  saveHistoryToDB,
+  loadHistoryFromDB,
+  saveImagesToDB,
+  loadImagesFromDB,
+  migrateFromLocalStorage,
+  clearAllData,
+} from "@/lib/indexed-db"
+
 const DB_NAME = "llm-api-tester-db"
 const DB_VERSION = 1
 const STORE_NAME = "fileHandles"
@@ -490,161 +500,103 @@ export default function LLMAPITester() {
   const unifiedEndpoint = baseURL.endsWith("/") ? baseURL.slice(0, -1) : baseURL // Remove trailing slash
   const fullApiPath = `${unifiedEndpoint}${apiPath}`
 
-  // Use a single for loading from localStorage
   useEffect(() => {
-    const saved = localStorage.getItem("llm-api-test-settings")
-    if (saved) {
-      const settings = JSON.parse(saved)
-      setProvider(settings.provider ?? DEFAULT_VALUES.provider)
-      setModel(settings.model ?? DEFAULT_VALUES.model)
-      setApiKey(settings.apiKey ?? DEFAULT_VALUES.apiKey)
-      setBaseURL(settings.baseURL ?? DEFAULT_VALUES.baseURL)
-      setApiPath(settings.apiPath ?? DEFAULT_VALUES.apiPath)
-      setSystemPrompt(settings.systemPrompt ?? DEFAULT_VALUES.systemPrompt)
-      setUserMessage(settings.userMessage ?? DEFAULT_VALUES.userMessage)
-      setPromptFilePath(settings.promptFilePath ?? DEFAULT_VALUES.promptFilePath)
-      setEnablePromptFile(settings.enablePromptFile ?? DEFAULT_VALUES.enablePromptFile) // Load enablePromptFile state
-      setSystemPromptFilePath(settings.systemPromptFilePath ?? DEFAULT_VALUES.systemPromptFilePath)
-      setEnableSystemPromptFile(settings.enableSystemPromptFile ?? DEFAULT_VALUES.enableSystemPromptFile)
-      setAutoReloadPrompt(settings.autoReloadPrompt ?? DEFAULT_VALUES.autoReloadPrompt)
-      setAutoReloadSystemPrompt(settings.autoReloadSystemPrompt ?? DEFAULT_VALUES.autoReloadSystemPrompt)
-      setAutoReloadImages(settings.autoReloadImages ?? DEFAULT_VALUES.autoReloadImages)
-      setMaxTokens(settings.maxTokens ?? DEFAULT_VALUES.maxTokens)
-      setTemperature(settings.temperature ?? DEFAULT_VALUES.temperature)
-      setTopP(settings.topP ?? DEFAULT_VALUES.topP)
-      setFrequencyPenalty(settings.frequencyPenalty ?? DEFAULT_VALUES.frequencyPenalty)
-      setPresencePenalty(settings.presencePenalty ?? DEFAULT_VALUES.presencePenalty)
-      setShowRawColumns(settings.showRawColumns ?? DEFAULT_VALUES.showRawColumns)
-      setExpandRequestContent(settings.expandRequestContent ?? DEFAULT_VALUES.expandRequestContent)
-      setExpandResponseContent(settings.expandResponseContent ?? DEFAULT_VALUES.expandResponseContent)
-      setTimerEnabled(settings.timerEnabled ?? DEFAULT_VALUES.timerEnabled)
-      setTimerInterval(settings.timerInterval ?? DEFAULT_VALUES.timerInterval)
-      setMaxTokensLimit(settings.maxTokensLimit ?? DEFAULT_VALUES.maxTokensLimit)
-      setPageSize(settings.pageSize ?? DEFAULT_VALUES.pageSize)
-      setPrompt(settings.prompt ?? DEFAULT_VALUES.prompt) // Load prompt from settings
-      // Load isParametersExpanded state from localStorage if available
-      setIsParametersExpanded(settings.isParametersExpanded ?? true)
-
-      // Load local file state if settings exist
-      setIsPromptFromLocalFile(settings.isPromptFromLocalFile ?? false)
-      setIsSystemPromptFromLocalFile(settings.isSystemPromptFromLocalFile ?? false)
-
-      // Load modality filters and search query if available
-      setSelectedInputModalities(settings.selectedInputModalities ?? [])
-      setSelectedOutputModalities(settings.selectedOutputModalities ?? [])
-      setModelSearchQuery(settings.modelSearchQuery ?? "")
-
-      // Load available modalities from saved settings if available
-      setAvailableInputModalities(settings.availableInputModalities ?? [])
-      setAvailableOutputModalities(settings.availableOutputModalities ?? [])
-
-      // Load image-related state
-      setMessageImages(settings.messageImages ?? [])
-      setImageUrl(settings.imageUrl ?? "")
-      setShowImageUrlInput(settings.showImageUrlInput ?? false)
-      // Load isAddingImageUrl state
-      setIsAddingImageUrl(settings.isAddingImageUrl ?? false)
-
-      const restoreFileHandlesSync = async () => {
-        // Use settings values directly instead of state (which hasn't updated yet)
-        const savedIsPromptFromLocalFile = settings.isPromptFromLocalFile ?? false
-        const savedPromptFilePath = settings.promptFilePath ?? ""
-        const savedIsSystemPromptFromLocalFile = settings.isSystemPromptFromLocalFile ?? false
-        const savedSystemPromptFilePath = settings.systemPromptFilePath ?? ""
-
-        // Restore prompt file handle
-        if (savedIsPromptFromLocalFile && savedPromptFilePath) {
-          const handle = await getFileHandle("promptFileHandle")
-          if (handle) {
-            promptFileHandleRef.current = handle
-            console.log("[v0] Restored prompt file handle from IndexedDB")
-
-            // Try to verify permission and reload content
-            const hasPermission = await verifyFilePermission(handle)
-            if (hasPermission) {
-              try {
-                const file = await handle.getFile()
-                const content = await file.text()
-                setLoadedPromptContent(content)
-                console.log("[v0] Auto-loaded prompt content after restoring handle")
-              } catch (error) {
-                console.log("[v0] Failed to auto-load prompt content:", error)
-              }
-            } else {
-              console.log("[v0] Permission not granted for prompt file, will request on next reload")
-            }
-          } else {
-            console.log("[v0] No prompt file handle found in IndexedDB")
-          }
-        }
-
-        // Restore system prompt file handle
-        if (savedIsSystemPromptFromLocalFile && savedSystemPromptFilePath) {
-          const handle = await getFileHandle("systemPromptFileHandle")
-          if (handle) {
-            systemPromptFileHandleRef.current = handle
-            console.log("[v0] Restored system prompt file handle from IndexedDB")
-
-            // Try to verify permission and reload content
-            const hasPermission = await verifyFilePermission(handle)
-            if (hasPermission) {
-              try {
-                const file = await handle.getFile()
-                const content = await file.text()
-                setLoadedSystemPromptContent(content)
-                console.log("[v0] Auto-loaded system prompt content after restoring handle")
-              } catch (error) {
-                console.log("[v0] Failed to auto-load system prompt content:", error)
-              }
-            } else {
-              console.log("[v0] Permission not granted for system prompt file, will request on next reload")
-            }
-          } else {
-            console.log("[v0] No system prompt file handle found in IndexedDB")
-          }
-        }
-      }
-
-      restoreFileHandlesSync()
-    } else {
-      // First time load: initialize baseURL and apiPath for default provider
-      const defaultProvider = API_PROVIDERS.find((p) => p.id === DEFAULT_VALUES.provider)
-      if (defaultProvider?.endpoint) {
-        try {
-          const url = new URL(defaultProvider.endpoint)
-          setBaseURL(url.origin)
-          setApiPath(url.pathname)
-        } catch (e) {
-          console.error("Invalid default endpoint format:", defaultProvider.endpoint, e)
-        }
-      }
-    }
-
-    // Load history with migration from old key
-    const savedHistory = localStorage.getItem("llm_api_history")
-    if (savedHistory) {
-      setHistory(JSON.parse(savedHistory))
-    } else {
-      // Migrate from old key if exists
-      const oldHistory = localStorage.getItem("llm-api-test-history")
-      if (oldHistory) {
-        setHistory(JSON.parse(oldHistory))
-        localStorage.setItem("llm_api_history", oldHistory)
-        localStorage.removeItem("llm-api-test-history")
-      }
-    }
-
-    const savedModelHistory = localStorage.getItem("modelHistory")
-    if (savedModelHistory) {
+    const initializeDB = async () => {
       try {
-        setModelHistory(JSON.parse(savedModelHistory))
+        await initDB()
+        await migrateFromLocalStorage()
+        console.log("[v0] IndexedDB initialized")
       } catch (error) {
-        console.error("Failed to load model history:", error)
+        console.error("[v0] Failed to initialize IndexedDB:", error)
       }
     }
+    initializeDB()
   }, [])
 
-  // Save settings to localStorage whenever they change
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        // Load settings from localStorage (without images)
+        const saved = localStorage.getItem("llm-api-test-settings")
+        if (saved) {
+          const settings = JSON.parse(saved)
+          if (settings.provider) setProvider(settings.provider)
+          if (settings.model) setModel(settings.model)
+          if (settings.apiKey) setApiKey(settings.apiKey)
+          if (settings.baseURL) setBaseURL(settings.baseURL)
+          if (settings.apiPath) setApiPath(settings.apiPath)
+          if (settings.systemPrompt !== undefined) setSystemPrompt(settings.systemPrompt)
+          if (settings.userMessage !== undefined) setUserMessage(settings.userMessage)
+          if (settings.promptFilePath !== undefined) setPromptFilePath(settings.promptFilePath)
+          if (settings.enablePromptFile !== undefined) setEnablePromptFile(settings.enablePromptFile)
+          if (settings.systemPromptFilePath !== undefined) setSystemPromptFilePath(settings.systemPromptFilePath)
+          if (settings.enableSystemPromptFile !== undefined) setEnableSystemPromptFile(settings.enableSystemPromptFile)
+          if (settings.autoReloadPrompt !== undefined) setAutoReloadPrompt(settings.autoReloadPrompt)
+          if (settings.autoReloadSystemPrompt !== undefined) setAutoReloadSystemPrompt(settings.autoReloadSystemPrompt)
+          if (settings.autoReloadImages !== undefined) setAutoReloadImages(settings.autoReloadImages)
+          if (settings.maxTokens) setMaxTokens(settings.maxTokens)
+          if (settings.temperature !== undefined) setTemperature(settings.temperature)
+          if (settings.topP !== undefined) setTopP(settings.topP)
+          if (settings.frequencyPenalty !== undefined) setFrequencyPenalty(settings.frequencyPenalty)
+          if (settings.presencePenalty !== undefined) setPresencePenalty(settings.presencePenalty)
+          if (settings.showRawColumns !== undefined) setShowRawColumns(settings.showRawColumns)
+          if (settings.expandRequestContent !== undefined) setExpandRequestContent(settings.expandRequestContent)
+          if (settings.expandResponseContent !== undefined) setExpandResponseContent(settings.expandResponseContent)
+          if (settings.timerEnabled !== undefined) setTimerEnabled(settings.timerEnabled)
+          if (settings.timerInterval !== undefined) setTimerInterval(settings.timerInterval)
+          if (settings.maxTokensLimit !== undefined) setMaxTokensLimit(settings.maxTokensLimit)
+          if (settings.pageSize !== undefined) setPageSize(settings.pageSize)
+          if (settings.prompt !== undefined) setPrompt(settings.prompt)
+          if (settings.isParametersExpanded !== undefined) setIsParametersExpanded(settings.isParametersExpanded)
+          if (settings.isPromptFromLocalFile !== undefined) setIsPromptFromLocalFile(settings.isPromptFromLocalFile)
+          if (settings.isSystemPromptFromLocalFile !== undefined)
+            setIsSystemPromptFromLocalFile(settings.isSystemPromptFromLocalFile)
+          if (settings.selectedInputModalities) setSelectedInputModalities(settings.selectedInputModalities)
+          if (settings.selectedOutputModalities) setSelectedOutputModalities(settings.selectedOutputModalities)
+          if (settings.modelSearchQuery !== undefined) setModelSearchQuery(settings.modelSearchQuery)
+          if (settings.availableInputModalities) setAvailableInputModalities(settings.availableInputModalities) // Changed to array
+          if (settings.availableOutputModalities) setAvailableOutputModalities(settings.availableOutputModalities) // Changed to array
+          if (settings.imageUrl !== undefined) setImageUrl(settings.imageUrl)
+          if (settings.showImageUrlInput !== undefined) setShowImageUrlInput(settings.showImageUrlInput)
+          if (settings.isAddingImageUrl !== undefined) setIsAddingImageUrl(settings.isAddingImageUrl)
+        }
+
+        const historyFromDB = await loadHistoryFromDB()
+        if (historyFromDB.length > 0) {
+          setHistory(historyFromDB)
+        } else {
+          // Fallback to localStorage if no data in IndexedDB
+          const savedHistory = localStorage.getItem("llm_api_history")
+          if (savedHistory) {
+            const parsedHistory = JSON.parse(savedHistory)
+            setHistory(parsedHistory)
+            // Save to IndexedDB for future use
+            await saveHistoryToDB(parsedHistory)
+          }
+        }
+
+        const imagesFromDB = await loadImagesFromDB()
+        if (imagesFromDB.length > 0) {
+          setMessageImages(imagesFromDB)
+        }
+
+        // Load model history from localStorage
+        const savedModelHistory = localStorage.getItem("modelHistory")
+        if (savedModelHistory) {
+          try {
+            setModelHistory(JSON.parse(savedModelHistory))
+          } catch (error) {
+            console.error("Failed to load model history:", error)
+          }
+        }
+      } catch (error) {
+        console.error("[v0] Error loading data:", error)
+      }
+    }
+
+    loadData()
+  }, [])
+
   useEffect(() => {
     const settings = {
       provider,
@@ -677,18 +629,14 @@ export default function LLMAPITester() {
       isParametersExpanded,
       isPromptFromLocalFile,
       isSystemPromptFromLocalFile,
-      // Save modality filters and search query
-      selectedInputModalities,
-      selectedOutputModalities,
+      // Changed from Set to Array to match the useState declaration
+      selectedInputModalities: Array.from(selectedInputModalities), // Convert Set to Array
+      selectedOutputModalities: Array.from(selectedOutputModalities), // Convert Set to Array
       modelSearchQuery,
-      // Save available modalities to settings
       availableInputModalities,
       availableOutputModalities,
-      // Save image-related state
-      messageImages,
       imageUrl,
       showImageUrlInput,
-      // Save isAddingImageUrl state
       isAddingImageUrl,
     }
     localStorage.setItem("llm-api-test-settings", JSON.stringify(settings))
@@ -728,30 +676,26 @@ export default function LLMAPITester() {
     modelSearchQuery,
     availableInputModalities,
     availableOutputModalities,
-    messageImages,
     imageUrl,
     showImageUrlInput,
-    isAddingImageUrl, // Include isAddingImageUrl in dependencies
+    isAddingImageUrl,
   ])
 
   useEffect(() => {
     if (typeof window !== "undefined" && history.length > 0) {
-      localStorage.setItem("llm_api_history", JSON.stringify(history))
+      saveHistoryToDB(history).catch((error) => {
+        console.error("[v0] Failed to save history to IndexedDB:", error)
+      })
     }
   }, [history])
 
   useEffect(() => {
-    localStorage.setItem("modelHistory", JSON.stringify(modelHistory))
-  }, [modelHistory])
-
-  useEffect(() => {
-    // Cleanup interval on component unmount
-    return () => {
-      if (timerRef.current) {
-        clearInterval(timerRef.current)
-      }
+    if (typeof window !== "undefined") {
+      saveImagesToDB(messageImages).catch((error) => {
+        console.error("[v0] Failed to save images to IndexedDB:", error)
+      })
     }
-  }, [])
+  }, [messageImages])
 
   const saveToModelHistory = (status: "idle" | "success" | "error", duration: number | null) => {
     const newItem: ModelHistoryItem = {
@@ -1543,9 +1487,10 @@ export default function LLMAPITester() {
 
       setHistory((prev) => {
         const updated = [historyItem, ...prev]
-        if (typeof window !== "undefined") {
-          localStorage.setItem("llm_api_history", JSON.stringify(updated))
-        }
+        // Save to IndexedDB instead of localStorage
+        saveHistoryToDB(updated).catch((error) => {
+          console.error("[v0] Failed to save history to IndexedDB:", error)
+        })
         return updated
       })
 
@@ -1607,9 +1552,10 @@ export default function LLMAPITester() {
       }
       setHistory((prev) => {
         const updated = [newHistoryItem, ...prev]
-        if (typeof window !== "undefined") {
-          localStorage.setItem("llm_api_history", JSON.stringify(updated))
-        }
+        // Save to IndexedDB instead of localStorage
+        saveHistoryToDB(updated).catch((error) => {
+          console.error("[v0] Failed to save history to IndexedDB:", error)
+        })
         return updated
       })
     } finally {
@@ -1695,8 +1641,8 @@ export default function LLMAPITester() {
     deleteFileHandle("systemPromptFileHandle")
 
     // Reset modality filters and search query
-    setSelectedInputModalities([])
-    setSelectedOutputModalities([])
+    setSelectedInputModalities([]) // Reset to empty array
+    setSelectedOutputModalities([]) // Reset to empty array
     setModelSearchQuery("")
 
     // Reset available modalities
@@ -1740,7 +1686,7 @@ export default function LLMAPITester() {
     setAutoReloadSystemPrompt(DEFAULT_VALUES.autoReloadSystemPrompt)
     setAutoReloadImages(DEFAULT_VALUES.autoReloadImages) // Reset autoReloadImages
 
-    // Remove specific items from localStorage related to parameters
+    // Remove specific items from localStorage
     localStorage.removeItem("llm-api-test-settings") // Clear all settings and reload defaults
   }
 
@@ -1749,22 +1695,47 @@ export default function LLMAPITester() {
     handleResetParameters()
   }
 
+  const handleDeleteAllHistory = () => {
+    clearAllData()
+      .then(() => {
+        setHistory([])
+        toast({
+          title: "历史记录已清空",
+          description: "所有历史测试数据已被删除",
+        })
+      })
+      .catch((error) => {
+        console.error("[v0] Failed to clear all data:", error)
+        toast({
+          variant: "destructive",
+          title: "错误",
+          description: "清空历史记录失败",
+        })
+      })
+  }
+
   const handleDeleteHistoryItem = (id: string) => {
-    setHistory((prev) => prev.filter((item) => item.id !== id))
-    const updatedHistory = history.filter((item) => item.id !== id)
-    if (updatedHistory.length === 0) {
-      localStorage.removeItem("llm_api_history")
-    } else {
-      localStorage.setItem("llm_api_history", JSON.stringify(updatedHistory))
-    }
+    const updated = history.filter((item) => item.id !== id)
+    setHistory(updated)
+    saveHistoryToDB(updated).catch((error) => {
+      console.error("[v0] Failed to update history in IndexedDB:", error)
+    })
+    toast({
+      title: "记录已删除",
+      description: "历史记录项已被删除",
+    })
   }
 
   const handleClearHistory = () => {
     setHistory([])
-    setCurrentPage(1)
-    setExpandedCells(new Set())
-    setVisibleRawCells(new Set()) // Clear visible raw cells on history clear
-    localStorage.removeItem("llm_api_history")
+    clearAllData().catch((error) => {
+      console.error("[v0] Failed to clear IndexedDB:", error)
+    })
+    setCurrentPage(1) // Reset to first page after clearing
+    toast({
+      title: "历史记录已清空",
+      description: "所有历史测试数据已被删除",
+    })
   }
 
   const deleteModelHistoryItem = (id: string) => {
@@ -2139,12 +2110,14 @@ export default function LLMAPITester() {
     let filtered = openrouterModels
 
     if (selectedInputModalities.length > 0) {
+      // Check length of array
       filtered = filtered.filter((model) =>
         selectedInputModalities.every((modality) => model.architecture?.input_modalities?.includes(modality)),
       )
     }
 
     if (selectedOutputModalities.length > 0) {
+      // Check length of array
       filtered = filtered.filter((model) =>
         selectedOutputModalities.every((modality) => model.architecture?.output_modalities?.includes(modality)),
       )
@@ -2522,7 +2495,7 @@ export default function LLMAPITester() {
                     <Download className="mr-2 size-4" />
                     导出CSV
                   </Button>
-                  <Button variant="outline" size="sm" onClick={clearModelHistory} disabled={modelHistory.length === 0}>
+                  <Button variant="outline" size="sm" onClick={handleClearHistory} disabled={modelHistory.length === 0}>
                     <Trash2 className="mr-2 size-4" />
                     清空
                   </Button>
