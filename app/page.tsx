@@ -1694,6 +1694,11 @@ export default function LLMAPITester() {
     setAutoReloadSystemPrompt(DEFAULT_VALUES.autoReloadSystemPrompt)
     setAutoReloadImages(DEFAULT_VALUES.autoReloadImages) // Reset autoReloadImages
 
+    setMessageImages([])
+    setImageUrl("")
+    setShowImageUrlInput(false)
+    setIsAddingImageUrl(false)
+
     // Remove specific items from localStorage
     localStorage.removeItem("llm-api-test-settings") // Clear all settings and reload defaults
   }
