@@ -239,6 +239,17 @@ interface OpenRouterModel {
   // Add other properties as per the actual API response
 }
 
+interface CerebrasModel {
+  id: string
+  name?: string
+  provider?: string
+  description?: string
+  link?: string
+  pub_date?: string
+  context_length?: number
+  // Add other properties as per the actual API response
+}
+
 const API_PROVIDERS = [
   {
     id: "openrouter",
@@ -246,29 +257,14 @@ const API_PROVIDERS = [
     endpoint: "https://openrouter.ai/api/v1/chat/completions",
   },
   {
-    id: "openai",
-    name: "OpenAI",
-    endpoint: "https://api.openai.com/v1/chat/completions",
-  },
-  {
     id: "deepseek",
     name: "DeepSeek",
     endpoint: "https://api.deepseek.com/v1/chat/completions",
   },
   {
-    id: "anthropic",
-    name: "Anthropic",
-    endpoint: "https://api.anthropic.com/v1/messages",
-  },
-  {
-    id: "gemini",
-    name: "Google Gemini",
-    endpoint: "https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent",
-  },
-  {
-    id: "xai",
-    name: "xAI",
-    endpoint: "https://api.x.ai/v1/chat/completions",
+    id: "cerebras",
+    name: "Cerebras",
+    endpoint: "https://api.cerebras.ai/v1/chat/completions",
   },
   {
     id: "custom",
@@ -457,11 +453,14 @@ export default function LLMAPITester() {
   const [isSystemPromptExpanded, setIsSystemPromptExpanded] = useState(false)
   const [model, setModel] = useState("")
   const [openrouterModels, setOpenrouterModels] = useState<OpenRouterModel[]>([])
+  const [cerebrasModels, setCerebrasModels] = useState<CerebrasModel[]>([])
   const [isLoadingModels, setIsLoadingModels] = useState(false)
   const [isCustomModel, setIsCustomModel] = useState(false)
   const [selectedInputModalities, setSelectedInputModalities] = useState<string[]>([])
   const [selectedOutputModalities, setSelectedOutputModalities] = useState<string[]>([])
   const [modelSearchQuery, setModelSearchQuery] = useState("")
+  const [translatedDescription, setTranslatedDescription] = useState<string>("")
+  const [isTranslating, setIsTranslating] = useState(false)
   const [maxTokens, setMaxTokens] = useState(DEFAULT_VALUES.maxTokens)
   const [temperature, setTemperature] = useState(DEFAULT_VALUES.temperature)
   const [topP, setTopP] = useState(DEFAULT_VALUES.topP)
@@ -1177,6 +1176,31 @@ export default function LLMAPITester() {
 
     if (providerId === "openrouter") {
       fetchOpenRouterModels()
+    } else if (providerId === "cerebras") {
+      fetchCerebrasModels()
+    }
+  }
+
+  const fetchCerebrasModels = async () => {
+    setIsLoadingModels(true)
+    try {
+      // 从提供的 URL 获取模型信息
+      const response = await fetch("https://models.xiechengqi.top/cerebras.json")
+      if (response.ok) {
+        const responseData = await response.json()
+        console.log("[v0] Fetched Cerebras models:", responseData)
+        // 根据结构，数据可能在 models 字段中
+        const models = Array.isArray(responseData) ? responseData : responseData.models || responseData.data || []
+        setCerebrasModels(models)
+      } else {
+        console.error("[v0] Failed to fetch Cerebras models:", response.statusText)
+        setCerebrasModels([])
+      }
+    } catch (error) {
+      console.error("[v0] Error fetching Cerebras models:", error)
+      setCerebrasModels([])
+    } finally {
+      setIsLoadingModels(false)
     }
   }
 
@@ -1206,6 +1230,8 @@ export default function LLMAPITester() {
   useEffect(() => {
     if (provider === "openrouter") {
       fetchOpenRouterModels()
+    } else if (provider === "cerebras") {
+      fetchCerebrasModels()
     } else {
       // Clear available modalities when switching away from OpenRouter
       setAvailableInputModalities([])
@@ -2137,9 +2163,26 @@ export default function LLMAPITester() {
     })
   }
 
+  // 自动保存 modelHistory 到 localStorage
+  useEffect(() => {
+    if (modelHistory.length > 0) {
+      try {
+        localStorage.setItem("modelHistory", JSON.stringify(modelHistory))
+      } catch (error) {
+        console.error("[v0] Failed to save model history to localStorage:", error)
+      }
+    }
+  }, [modelHistory])
+
   const clearModelHistory = () => {
     setModelHistory([])
     setModelHistoryPage(1)
+    // 清空 localStorage
+    try {
+      localStorage.removeItem("modelHistory")
+    } catch (error) {
+      console.error("[v0] Failed to clear model history from localStorage:", error)
+    }
     toast({
       title: "历史记录已清空",
       duration: 2000,
@@ -2205,6 +2248,22 @@ export default function LLMAPITester() {
     return filtered
   }, [openrouterModels, modelSearchQuery])
 
+  const filteredCerebrasModels = useMemo(() => {
+    let filtered = cerebrasModels
+
+    // Filter by search query - 从 model id 和 name 匹配
+    if (modelSearchQuery.trim()) {
+      const query = modelSearchQuery.toLowerCase()
+      filtered = filtered.filter((model) => {
+        const idMatch = model.id.toLowerCase().includes(query)
+        const nameMatch = model.name?.toLowerCase().includes(query) || false
+        return idMatch || nameMatch
+      })
+    }
+
+    return filtered
+  }, [cerebrasModels, modelSearchQuery])
+
   // 获取当前选中的模型信息
   const selectedModelInfo = useMemo(() => {
     if (provider === "openrouter" && model) {
@@ -2212,16 +2271,107 @@ export default function LLMAPITester() {
       const modelIdWithoutFree = model.endsWith(":free") ? model.slice(0, -5) : model
       return openrouterModels.find((m) => m.id === modelIdWithoutFree)
     }
+    if (provider === "cerebras" && model) {
+      return cerebrasModels.find((m) => m.id === model)
+    }
     return null
-  }, [provider, model, openrouterModels])
+  }, [provider, model, openrouterModels, cerebrasModels])
 
   // 获取当前选中模型的显示名称（用于下拉框按钮显示）
   const selectedModelDisplayName = useMemo(() => {
     if (provider === "openrouter" && model && selectedModelInfo) {
       return selectedModelInfo.name || selectedModelInfo.id
     }
+    if (provider === "cerebras" && model && selectedModelInfo) {
+      return selectedModelInfo.name || selectedModelInfo.id
+    }
     return model || ""
   }, [provider, model, selectedModelInfo])
+
+  // 翻译 description 为中文
+  const translateDescription = async (text: string) => {
+    if (!text || isTranslating) return
+    
+    setIsTranslating(true)
+    try {
+      // MyMemory Translation API 有 500 字符限制，需要分段翻译长文本
+      const MAX_LENGTH = 500
+      
+      if (text.length <= MAX_LENGTH) {
+        // 文本长度在限制内，直接翻译
+        const response = await fetch(
+          `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|zh-CN`
+        )
+        if (response.ok) {
+          const data = await response.json()
+          if (data.responseData && data.responseData.translatedText) {
+            setTranslatedDescription(data.responseData.translatedText)
+          } else {
+            setTranslatedDescription("")
+          }
+        } else {
+          const errorData = await response.json().catch(() => ({}))
+          console.error("[v0] Translation API error:", errorData)
+          setTranslatedDescription("")
+        }
+      } else {
+        // 文本超过限制，分段翻译
+        const segments: string[] = []
+        for (let i = 0; i < text.length; i += MAX_LENGTH) {
+          const segment = text.substring(i, i + MAX_LENGTH)
+          segments.push(segment)
+        }
+        
+        const translatedSegments: string[] = []
+        for (const segment of segments) {
+          try {
+            const response = await fetch(
+              `https://api.mymemory.translated.net/get?q=${encodeURIComponent(segment)}&langpair=en|zh-CN`
+            )
+            if (response.ok) {
+              const data = await response.json()
+              if (data.responseData && data.responseData.translatedText) {
+                translatedSegments.push(data.responseData.translatedText)
+              } else {
+                translatedSegments.push(segment) // 翻译失败，使用原文
+              }
+            } else {
+              translatedSegments.push(segment) // 翻译失败，使用原文
+            }
+          } catch (error) {
+            console.error("[v0] Error translating segment:", error)
+            translatedSegments.push(segment) // 翻译失败，使用原文
+          }
+          // 添加小延迟避免请求过快
+          await new Promise((resolve) => setTimeout(resolve, 100))
+        }
+        
+        setTranslatedDescription(translatedSegments.join(""))
+      }
+    } catch (error) {
+      console.error("[v0] Error translating description:", error)
+      setTranslatedDescription("")
+    } finally {
+      setIsTranslating(false)
+    }
+  }
+
+  // 当 selectedModelInfo 的 description 变化时，自动翻译
+  useEffect(() => {
+    if (provider === "openrouter" && selectedModelInfo?.description) {
+      const description = selectedModelInfo.description
+      // 检查是否已经是中文（简单判断：如果包含中文字符，可能已经是中文）
+      const hasChinese = /[\u4e00-\u9fa5]/.test(description)
+      if (!hasChinese && description.trim()) {
+        translateDescription(description)
+      } else {
+        setTranslatedDescription("")
+      }
+    } else {
+      setTranslatedDescription("")
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider, selectedModelInfo?.description])
 
   const handleAddImageUrl = async () => {
     if (!imageUrl.trim()) {
@@ -2417,7 +2567,7 @@ export default function LLMAPITester() {
             </Select>
 
 
-            {provider === "openrouter" ? (
+            {provider === "openrouter" || provider === "cerebras" ? (
               <div className="flex items-center gap-2">
                 {!isCustomModel ? (
                   <>
@@ -2442,32 +2592,55 @@ export default function LLMAPITester() {
                           <CommandList>
                             <CommandEmpty>未找到模型</CommandEmpty>
                             <CommandGroup>
-                              {filteredOpenRouterModels.map((m) => {
-                                // 检查是否是免费模型（name 中包含 "(free)"）
-                                const isFreeModel = m.name?.includes("(free)") || false
-                                // 如果是免费模型，id 需要添加 :free 后缀
-                                const modelIdToUse = isFreeModel ? `${m.id}:free` : m.id
-                                // CommandItem 的 value 包含 id 和 name，以便 Command 组件也能搜索 name
-                                const searchableValue = [m.id, m.name].filter(Boolean).join(" ")
-                                
-                                return (
-                                  <CommandItem
-                                    key={m.id}
-                                    value={searchableValue}
-                                    onSelect={() => {
-                                      setModel(modelIdToUse)
-                                      // 不清空搜索词，保持搜索状态
-                                    }}
-                                  >
-                                    <div className="flex flex-col gap-0.5">
-                                      <span className="font-medium">{m.name || m.id}</span>
-                                      {m.context_length && (
-                                        <span className="text-xs text-muted-foreground">{m.context_length} tokens</span>
-                                      )}
-                                    </div>
-                                  </CommandItem>
-                                )
-                              })}
+                              {provider === "openrouter"
+                                ? filteredOpenRouterModels.map((m) => {
+                                    // 检查是否是免费模型（name 中包含 "(free)"）
+                                    const isFreeModel = m.name?.includes("(free)") || false
+                                    // 如果是免费模型，id 需要添加 :free 后缀
+                                    const modelIdToUse = isFreeModel ? `${m.id}:free` : m.id
+                                    // CommandItem 的 value 包含 id 和 name，以便 Command 组件也能搜索 name
+                                    const searchableValue = [m.id, m.name].filter(Boolean).join(" ")
+
+                                    return (
+                                      <CommandItem
+                                        key={m.id}
+                                        value={searchableValue}
+                                        onSelect={() => {
+                                          setModel(modelIdToUse)
+                                          // 不清空搜索词，保持搜索状态
+                                        }}
+                                      >
+                                        <div className="flex flex-col gap-0.5">
+                                          <span className="font-medium">{m.name || m.id}</span>
+                                          {m.context_length && (
+                                            <span className="text-xs text-muted-foreground">{m.context_length} tokens</span>
+                                          )}
+                                        </div>
+                                      </CommandItem>
+                                    )
+                                  })
+                                : filteredCerebrasModels.map((m) => {
+                                    // CommandItem 的 value 包含 id 和 name，以便 Command 组件也能搜索 name
+                                    const searchableValue = [m.id, m.name].filter(Boolean).join(" ")
+
+                                    return (
+                                      <CommandItem
+                                        key={m.id}
+                                        value={searchableValue}
+                                        onSelect={() => {
+                                          setModel(m.id)
+                                          // 不清空搜索词，保持搜索状态
+                                        }}
+                                      >
+                                        <div className="flex flex-col gap-0.5">
+                                          <span className="font-medium">{m.name || m.id}</span>
+                                          {m.context_length && (
+                                            <span className="text-xs text-muted-foreground">{m.context_length} tokens</span>
+                                          )}
+                                        </div>
+                                      </CommandItem>
+                                    )
+                                  })}
                             </CommandGroup>
                           </CommandList>
                         </Command>
@@ -2555,12 +2728,31 @@ export default function LLMAPITester() {
         )}
       </nav>
 
-      {/* OpenRouter 模型信息显示 */}
-      {provider === "openrouter" && selectedModelInfo && (
+      {/* OpenRouter 和 Cerebras 模型信息显示 */}
+      {(provider === "openrouter" || provider === "cerebras") && selectedModelInfo && (
         <div className="border-b bg-muted/30 px-4 py-3 md:px-8">
           <div className="max-w-7xl mx-auto space-y-2">
             {selectedModelInfo.description && (
-              <p className="text-sm text-muted-foreground leading-relaxed">{selectedModelInfo.description}</p>
+              <div className="space-y-2">
+                {isTranslating ? (
+                  <p className="text-sm text-muted-foreground leading-relaxed">
+                    {selectedModelInfo.description}
+                    <span className="ml-2 text-xs opacity-60">翻译中...</span>
+                  </p>
+                ) : translatedDescription ? (
+                  <>
+                    <p className="text-sm text-muted-foreground leading-relaxed">{translatedDescription}</p>
+                    <details className="text-xs">
+                      <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+                        查看原文
+                      </summary>
+                      <p className="mt-2 text-muted-foreground leading-relaxed">{selectedModelInfo.description}</p>
+                    </details>
+                  </>
+                ) : (
+                  <p className="text-sm text-muted-foreground leading-relaxed">{selectedModelInfo.description}</p>
+                )}
+              </div>
             )}
             <div className="flex items-center gap-4 text-xs text-muted-foreground">
               {selectedModelInfo.link && (() => {
