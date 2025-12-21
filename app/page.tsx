@@ -28,9 +28,10 @@ import {
   Link,
   ZoomIn,
   Loader2,
+  RefreshCw,
 } from "lucide-react" // Import Copy, Pencil, List, Eye, EyeOff, RotateCcw, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Calendar, Check, Clock, X, Play, StopCircle icons
 
-import { useState, useEffect, useRef, useMemo } from "react" // Import useRef, useMemo
+import { useState, useEffect, useRef, useMemo, useCallback } from "react" // Import useRef, useMemo, useCallback
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -461,6 +462,7 @@ export default function LLMAPITester() {
   const [modelSearchQuery, setModelSearchQuery] = useState("")
   const [translatedDescription, setTranslatedDescription] = useState<string>("")
   const [isTranslating, setIsTranslating] = useState(false)
+  const [translationError, setTranslationError] = useState<string>("")
   const [maxTokens, setMaxTokens] = useState(DEFAULT_VALUES.maxTokens)
   const [temperature, setTemperature] = useState(DEFAULT_VALUES.temperature)
   const [topP, setTopP] = useState(DEFAULT_VALUES.topP)
@@ -510,6 +512,7 @@ export default function LLMAPITester() {
 
   const [probeStatus, setProbeStatus] = useState<"idle" | "success" | "error">("idle")
   const [probeDuration, setProbeDuration] = useState<number | null>(null)
+  const [isProbeTesting, setIsProbeTesting] = useState(false)
 
   const [timerEnabled, setTimerEnabled] = useState(DEFAULT_VALUES.timerEnabled)
   const [timerInterval, setTimerInterval] = useState(DEFAULT_VALUES.timerInterval)
@@ -1054,7 +1057,9 @@ export default function LLMAPITester() {
 
   const runProbeTest = async () => {
     if (!apiKey || !model || !fullApiPath) return // Added fullApiPath check
+    if (isProbeTesting) return // 防止重复点击
 
+    setIsProbeTesting(true)
     toast({
       title: "探针测试开始",
       description: `提供商: ${provider}, 模型: ${model}`,
@@ -1103,6 +1108,7 @@ export default function LLMAPITester() {
           description: `服务器返回非JSON响应 (状态码: ${response.status})`,
           duration: 3000,
         })
+        setIsProbeTesting(false)
         return
       }
 
@@ -1137,6 +1143,8 @@ export default function LLMAPITester() {
         description: error instanceof Error ? error.message : "网络请求失败",
         duration: 3000, // 3 seconds
       })
+    } finally {
+      setIsProbeTesting(false)
     }
   }
 
@@ -2288,31 +2296,135 @@ export default function LLMAPITester() {
     return model || ""
   }, [provider, model, selectedModelInfo])
 
-  // 翻译 description 为中文
-  const translateDescription = async (text: string) => {
-    if (!text || isTranslating) return
+  // 备用翻译 API 1: LibreTranslate (免费开源翻译服务)
+  const translateWithLibreTranslate = async (text: string): Promise<string | null> => {
+    try {
+      // 使用公共 LibreTranslate 实例
+      const response = await fetch("https://libretranslate.de/translate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          q: text,
+          source: "en",
+          target: "zh",
+          format: "text",
+        }),
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        if (data.translatedText) {
+          console.log("[v0] LibreTranslate 翻译成功")
+          return data.translatedText
+        }
+      }
+    } catch (error) {
+      console.warn("[v0] LibreTranslate 翻译失败:", error)
+    }
+    return null
+  }
+
+  // 备用翻译 API 2: Google Translate 免费接口（通过代理）
+  const translateWithGoogleTranslate = async (text: string): Promise<string | null> => {
+    try {
+      // 使用 Google Translate 的免费接口（通过第三方代理）
+      const response = await fetch(
+        `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-CN&dt=t&q=${encodeURIComponent(text)}`
+      )
+      
+      if (response.ok) {
+        const data = await response.json()
+        if (data && data[0] && Array.isArray(data[0])) {
+          const translated = data[0].map((item: any[]) => item[0]).join("")
+          if (translated) {
+            console.log("[v0] Google Translate 翻译成功")
+            return translated
+          }
+        }
+      }
+    } catch (error) {
+      console.warn("[v0] Google Translate 翻译失败:", error)
+    }
+    return null
+  }
+
+  // 主翻译 API: MyMemory Translation API
+  const translateWithMyMemory = async (text: string): Promise<string | null> => {
+    try {
+      const response = await fetch(
+        `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|zh-CN`
+      )
+      
+      if (response.ok) {
+        const data = await response.json()
+        console.log("[v0] MyMemory API 响应:", data)
+        
+        // 检查是否是配额用尽的警告
+        if (data.responseStatus === 429 || 
+            (data.responseData?.translatedText && 
+             data.responseData.translatedText.includes("MYMEMORY WARNING"))) {
+          console.warn("[v0] MyMemory API 配额已用尽")
+          return null // 返回 null 触发备用机制
+        }
+        
+        if (data.responseData && data.responseData.translatedText) {
+          console.log("[v0] MyMemory 翻译成功")
+          return data.responseData.translatedText
+        }
+      } else if (response.status === 429) {
+        console.warn("[v0] MyMemory API 配额已用尽 (HTTP 429)")
+        return null
+      }
+    } catch (error) {
+      console.warn("[v0] MyMemory API 翻译失败:", error)
+    }
+    return null
+  }
+
+  // 翻译 description 为中文（带备用机制）
+  const translateDescription = useCallback(async (text: string) => {
+    if (!text) {
+      console.log("[v0] translateDescription: 文本为空，跳过翻译")
+      return
+    }
     
+    console.log("[v0] translateDescription: 开始翻译，文本长度:", text.length)
     setIsTranslating(true)
+    setTranslatedDescription("") // 清空之前的翻译结果
+    setTranslationError("") // 清空之前的错误信息
     try {
       // MyMemory Translation API 有 500 字符限制，需要分段翻译长文本
       const MAX_LENGTH = 500
       
       if (text.length <= MAX_LENGTH) {
         // 文本长度在限制内，直接翻译
-        const response = await fetch(
-          `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|zh-CN`
-        )
-        if (response.ok) {
-          const data = await response.json()
-          if (data.responseData && data.responseData.translatedText) {
-            setTranslatedDescription(data.responseData.translatedText)
-          } else {
-            setTranslatedDescription("")
-          }
+        // 按优先级尝试多个翻译 API
+        let translated: string | null = null
+        
+        // 1. 尝试 MyMemory API
+        translated = await translateWithMyMemory(text)
+        
+        // 2. 如果 MyMemory 失败，尝试 LibreTranslate
+        if (!translated) {
+          console.log("[v0] 切换到备用翻译 API: LibreTranslate")
+          translated = await translateWithLibreTranslate(text)
+        }
+        
+        // 3. 如果 LibreTranslate 也失败，尝试 Google Translate
+        if (!translated) {
+          console.log("[v0] 切换到备用翻译 API: Google Translate")
+          translated = await translateWithGoogleTranslate(text)
+        }
+        
+        if (translated) {
+          console.log("[v0] 翻译成功:", translated.substring(0, 100))
+          setTranslatedDescription(translated)
         } else {
-          const errorData = await response.json().catch(() => ({}))
-          console.error("[v0] Translation API error:", errorData)
+          console.warn("[v0] 所有翻译 API 都失败了")
           setTranslatedDescription("")
+          setTranslationError("翻译失败：所有翻译服务暂时不可用，请稍后重试")
         }
       } else {
         // 文本超过限制，分段翻译
@@ -2322,56 +2434,103 @@ export default function LLMAPITester() {
           segments.push(segment)
         }
         
+        // 长文本分段翻译，使用备用机制
         const translatedSegments: string[] = []
+        let hasTranslationError = false
+        let currentApi = "mymemory" // 当前使用的 API
+        
         for (const segment of segments) {
-          try {
-            const response = await fetch(
-              `https://api.mymemory.translated.net/get?q=${encodeURIComponent(segment)}&langpair=en|zh-CN`
-            )
-            if (response.ok) {
-              const data = await response.json()
-              if (data.responseData && data.responseData.translatedText) {
-                translatedSegments.push(data.responseData.translatedText)
-              } else {
-                translatedSegments.push(segment) // 翻译失败，使用原文
-              }
-            } else {
-              translatedSegments.push(segment) // 翻译失败，使用原文
+          let translated: string | null = null
+          
+          // 按优先级尝试翻译 API
+          if (currentApi === "mymemory") {
+            translated = await translateWithMyMemory(segment)
+            if (!translated) {
+              console.log("[v0] MyMemory 失败，切换到 LibreTranslate")
+              currentApi = "libretranslate"
             }
-          } catch (error) {
-            console.error("[v0] Error translating segment:", error)
-            translatedSegments.push(segment) // 翻译失败，使用原文
           }
+          
+          if (!translated && currentApi === "libretranslate") {
+            translated = await translateWithLibreTranslate(segment)
+            if (!translated) {
+              console.log("[v0] LibreTranslate 失败，切换到 Google Translate")
+              currentApi = "google"
+            }
+          }
+          
+          if (!translated && currentApi === "google") {
+            translated = await translateWithGoogleTranslate(segment)
+          }
+          
+          if (translated) {
+            translatedSegments.push(translated)
+          } else {
+            translatedSegments.push(segment) // 翻译失败，使用原文
+            hasTranslationError = true
+          }
+          
           // 添加小延迟避免请求过快
           await new Promise((resolve) => setTimeout(resolve, 100))
         }
         
+        if (hasTranslationError) {
+          setTranslationError("翻译失败：部分内容无法翻译")
+        }
         setTranslatedDescription(translatedSegments.join(""))
       }
     } catch (error) {
       console.error("[v0] Error translating description:", error)
       setTranslatedDescription("")
+      setTranslationError(`翻译失败：${error instanceof Error ? error.message : "网络请求失败"}`)
     } finally {
       setIsTranslating(false)
     }
-  }
+  }, [])
 
   // 当 selectedModelInfo 的 description 变化时，自动翻译
   useEffect(() => {
+    console.log("[v0] Translation useEffect 触发:", {
+      provider,
+      hasDescription: !!selectedModelInfo?.description,
+      descriptionLength: selectedModelInfo?.description?.length,
+      modelId: selectedModelInfo?.id
+    })
+    
+    // 清空之前的翻译结果和错误信息
+    setTranslatedDescription("")
+    setIsTranslating(false)
+    setTranslationError("")
+    
     if (provider === "openrouter" && selectedModelInfo?.description) {
-      const description = selectedModelInfo.description
+      const description = selectedModelInfo.description.trim()
+      if (!description) {
+        console.log("[v0] Translation: description 为空，跳过翻译")
+        return
+      }
+      
       // 检查是否已经是中文（简单判断：如果包含中文字符，可能已经是中文）
       const hasChinese = /[\u4e00-\u9fa5]/.test(description)
-      if (!hasChinese && description.trim()) {
-        translateDescription(description)
+      console.log("[v0] Translation: 检查中文", { hasChinese, descriptionPreview: description.substring(0, 50) })
+      
+      if (!hasChinese) {
+        // 延迟一点执行，确保状态已重置
+        console.log("[v0] Translation: 准备翻译，延迟 100ms")
+        const timer = setTimeout(() => {
+          console.log("[v0] Translation: 开始调用 translateDescription")
+          translateDescription(description)
+        }, 100)
+        return () => {
+          console.log("[v0] Translation: 清理定时器")
+          clearTimeout(timer)
+        }
       } else {
-        setTranslatedDescription("")
+        console.log("[v0] Translation: 文本已包含中文，跳过翻译")
       }
     } else {
-      setTranslatedDescription("")
+      console.log("[v0] Translation: 条件不满足", { provider, hasDescription: !!selectedModelInfo?.description })
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [provider, selectedModelInfo?.description])
+  }, [provider, selectedModelInfo?.description, selectedModelInfo?.id, translateDescription])
 
   const handleAddImageUrl = async () => {
     if (!imageUrl.trim()) {
@@ -2545,6 +2704,20 @@ export default function LLMAPITester() {
                 {probeStatus === "success" && probeDuration && (
                   <span className="text-xs text-muted-foreground">{probeDuration}ms</span>
                 )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={runProbeTest}
+                  disabled={isProbeTesting || !apiKey || !model || !fullApiPath}
+                  className="h-6 px-2"
+                  title="重新测试"
+                >
+                  {isProbeTesting ? (
+                    <Loader2 className="size-3 animate-spin" />
+                  ) : (
+                    <RefreshCw className="size-3" />
+                  )}
+                </Button>
               </div>
             )}
           </div>
@@ -2749,6 +2922,16 @@ export default function LLMAPITester() {
                       <p className="mt-2 text-muted-foreground leading-relaxed">{selectedModelInfo.description}</p>
                     </details>
                   </>
+                ) : translationError ? (
+                  <div className="space-y-1">
+                    <p className="text-sm text-destructive leading-relaxed">{translationError}</p>
+                    <details className="text-xs">
+                      <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+                        查看原文
+                      </summary>
+                      <p className="mt-2 text-muted-foreground leading-relaxed">{selectedModelInfo.description}</p>
+                    </details>
+                  </div>
                 ) : (
                   <p className="text-sm text-muted-foreground leading-relaxed">{selectedModelInfo.description}</p>
                 )}
