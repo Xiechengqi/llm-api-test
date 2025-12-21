@@ -30,6 +30,7 @@ import {
   Loader2,
   RefreshCw,
   Star,
+  Heart,
 } from "lucide-react" // Import Copy, Pencil, List, Eye, EyeOff, RotateCcw, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Calendar, Check, Clock, X, Play, StopCircle icons
 
 import { useState, useEffect, useRef, useMemo, useCallback } from "react" // Import useRef, useMemo, useCallback
@@ -259,6 +260,7 @@ interface ModelScopeModel {
   description?: string
   link?: string
   pub_date?: string
+  time?: string // 时间
   context_length?: number
   task_types?: string | string[] // 可能是字符串或字符串数组
   downloads?: number // 下载量
@@ -3086,16 +3088,26 @@ export default function LLMAPITester() {
                 const modelScopeInfo = selectedModelInfo as ModelScopeModel
                 return (
                   <>
+                    {modelScopeInfo.time && (
+                      <span className="flex items-center gap-1">
+                        <span>{modelScopeInfo.time}</span>
+                      </span>
+                    )}
+                    {modelScopeInfo.task_types && (
+                      <span className="flex items-center gap-1">
+                        <span>{Array.isArray(modelScopeInfo.task_types) ? modelScopeInfo.task_types.join(", ") : modelScopeInfo.task_types}</span>
+                      </span>
+                    )}
                     {modelScopeInfo.downloads !== undefined && (
                       <span className="flex items-center gap-1">
                         <Download className="size-3" />
-                        <span>下载量: {modelScopeInfo.downloads.toLocaleString()}</span>
+                        <span>{modelScopeInfo.downloads.toLocaleString()}</span>
                       </span>
                     )}
                     {modelScopeInfo.stars !== undefined && (
                       <span className="flex items-center gap-1">
-                        <Star className="size-3" />
-                        <span>点赞数: {modelScopeInfo.stars.toLocaleString()}</span>
+                        <Heart className="size-3 fill-current" />
+                        <span>{modelScopeInfo.stars.toLocaleString()}</span>
                       </span>
                     )}
                   </>
