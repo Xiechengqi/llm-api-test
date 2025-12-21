@@ -1,7 +1,6 @@
 import type { Metadata } from "next"
 import type React from "react"
 
-import { Analytics } from "@vercel/analytics/next"
 import "./globals.css"
 
 import { Geist, Geist_Mono, Source_Serif_4 } from "next/font/google"
@@ -39,7 +38,6 @@ export default function RootLayout({
       <body className={`font-sans antialiased`}>
         {children}
         <PWAInstallPrompt />
-        <Analytics />
         <script
           dangerouslySetInnerHTML={{
             __html: `

@@ -29,6 +29,7 @@ import {
   ZoomIn,
   Loader2,
   RefreshCw,
+  Star,
 } from "lucide-react" // Import Copy, Pencil, List, Eye, EyeOff, RotateCcw, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Calendar, Check, Clock, X, Play, StopCircle icons
 
 import { useState, useEffect, useRef, useMemo, useCallback } from "react" // Import useRef, useMemo, useCallback
@@ -251,6 +252,20 @@ interface CerebrasModel {
   // Add other properties as per the actual API response
 }
 
+interface ModelScopeModel {
+  id: string
+  name?: string
+  provider?: string
+  description?: string
+  link?: string
+  pub_date?: string
+  context_length?: number
+  task_types?: string | string[] // 可能是字符串或字符串数组
+  downloads?: number // 下载量
+  stars?: number // 点赞数
+  // Add other properties as per the actual API response
+}
+
 const API_PROVIDERS = [
   {
     id: "openrouter",
@@ -266,6 +281,11 @@ const API_PROVIDERS = [
     id: "cerebras",
     name: "Cerebras",
     endpoint: "https://api.cerebras.ai/v1/chat/completions",
+  },
+  {
+    id: "modelscope",
+    name: "ModelScope",
+    endpoint: "https://api-inference.modelscope.cn/v1/chat/completions",
   },
   {
     id: "custom",
@@ -423,7 +443,7 @@ export default function LLMAPITester() {
     baseURL: "https://openrouter.ai",
     apiPath: "/api/v1/chat/completions",
     systemPrompt: "You are a helpful assistant.",
-    userMessage: "Hello! How are you today?",
+    userMessage: "你是谁？中文回复",
     promptFilePath: "",
     enablePromptFile: false, // Add enablePromptFile state with default false
     systemPromptFilePath: "",
@@ -455,6 +475,7 @@ export default function LLMAPITester() {
   const [model, setModel] = useState("")
   const [openrouterModels, setOpenrouterModels] = useState<OpenRouterModel[]>([])
   const [cerebrasModels, setCerebrasModels] = useState<CerebrasModel[]>([])
+  const [modelscopeModels, setModelscopeModels] = useState<ModelScopeModel[]>([])
   const [isLoadingModels, setIsLoadingModels] = useState(false)
   const [isCustomModel, setIsCustomModel] = useState(false)
   const [selectedInputModalities, setSelectedInputModalities] = useState<string[]>([])
@@ -539,7 +560,42 @@ export default function LLMAPITester() {
 
   // Use a unified base URL for API calls
   const unifiedEndpoint = baseURL.endsWith("/") ? baseURL.slice(0, -1) : baseURL // Remove trailing slash
-  const fullApiPath = `${unifiedEndpoint}${apiPath}`
+  
+  // 获取当前选中的模型信息（提前定义，供 fullApiPath 使用）
+  const selectedModelInfoForPath = useMemo(() => {
+    if (provider === "openrouter" && model) {
+      const modelIdWithoutFree = model.endsWith(":free") ? model.slice(0, -5) : model
+      return openrouterModels.find((m) => m.id === modelIdWithoutFree)
+    }
+    if (provider === "cerebras" && model) {
+      return cerebrasModels.find((m) => m.id === model)
+    }
+    if (provider === "modelscope" && model) {
+      return modelscopeModels.find((m) => m.id === model)
+    }
+    return null
+  }, [provider, model, openrouterModels, cerebrasModels, modelscopeModels])
+  
+  // 根据 ModelScope 的 task_types 动态选择 API 路径
+  const fullApiPath = useMemo(() => {
+    if (provider === "modelscope" && selectedModelInfoForPath) {
+      const modelScopeInfo = selectedModelInfoForPath as ModelScopeModel
+      // 如果 task_types 包含"生成图片"，使用图片生成端点
+      // task_types 可能是字符串或字符串数组
+      const taskTypes = modelScopeInfo.task_types
+      const hasImageGeneration = Array.isArray(taskTypes)
+        ? taskTypes.includes("生成图片")
+        : typeof taskTypes === "string" && taskTypes.includes("生成图片")
+      
+      if (hasImageGeneration) {
+        return "https://api-inference.modelscope.cn/v1/images/generations"
+      } else {
+        return "https://api-inference.modelscope.cn/v1/chat/completions"
+      }
+    }
+    // 其他提供商使用统一的 baseURL + apiPath
+    return `${unifiedEndpoint}${apiPath}`
+  }, [provider, selectedModelInfoForPath, unifiedEndpoint, apiPath])
 
   useEffect(() => {
     const initializeDB = async () => {
@@ -1186,6 +1242,11 @@ export default function LLMAPITester() {
       fetchOpenRouterModels()
     } else if (providerId === "cerebras") {
       fetchCerebrasModels()
+    } else if (providerId === "modelscope") {
+      fetchModelScopeModels()
+      // ModelScope 使用固定的 baseURL，但 fullApiPath 会根据 task_types 动态选择
+      setBaseURL("https://api-inference.modelscope.cn")
+      setApiPath("/v1/chat/completions") // 默认路径，实际会根据 task_types 在 fullApiPath 中覆盖
     }
   }
 
@@ -1207,6 +1268,29 @@ export default function LLMAPITester() {
     } catch (error) {
       console.error("[v0] Error fetching Cerebras models:", error)
       setCerebrasModels([])
+    } finally {
+      setIsLoadingModels(false)
+    }
+  }
+
+  const fetchModelScopeModels = async () => {
+    setIsLoadingModels(true)
+    try {
+      // 从提供的 URL 获取模型信息
+      const response = await fetch("https://models.xiechengqi.top/modelscope.json")
+      if (response.ok) {
+        const responseData = await response.json()
+        console.log("[v0] Fetched ModelScope models:", responseData)
+        // 根据结构，数据可能在 models 字段中
+        const models = Array.isArray(responseData) ? responseData : responseData.models || responseData.data || []
+        setModelscopeModels(models)
+      } else {
+        console.error("[v0] Failed to fetch ModelScope models:", response.statusText)
+        setModelscopeModels([])
+      }
+    } catch (error) {
+      console.error("[v0] Error fetching ModelScope models:", error)
+      setModelscopeModels([])
     } finally {
       setIsLoadingModels(false)
     }
@@ -1240,6 +1324,8 @@ export default function LLMAPITester() {
       fetchOpenRouterModels()
     } else if (provider === "cerebras") {
       fetchCerebrasModels()
+    } else if (provider === "modelscope") {
+      fetchModelScopeModels()
     } else {
       // Clear available modalities when switching away from OpenRouter
       setAvailableInputModalities([])
@@ -2272,18 +2358,24 @@ export default function LLMAPITester() {
     return filtered
   }, [cerebrasModels, modelSearchQuery])
 
-  // 获取当前选中的模型信息
-  const selectedModelInfo = useMemo(() => {
-    if (provider === "openrouter" && model) {
-      // 如果 model 以 :free 结尾，需要去掉 :free 来查找原始模型
-      const modelIdWithoutFree = model.endsWith(":free") ? model.slice(0, -5) : model
-      return openrouterModels.find((m) => m.id === modelIdWithoutFree)
+  const filteredModelScopeModels = useMemo(() => {
+    let filtered = modelscopeModels
+
+    // Filter by search query - 从 model id 和 name 匹配
+    if (modelSearchQuery.trim()) {
+      const query = modelSearchQuery.toLowerCase()
+      filtered = filtered.filter((model) => {
+        const idMatch = model.id.toLowerCase().includes(query)
+        const nameMatch = model.name?.toLowerCase().includes(query) || false
+        return idMatch || nameMatch
+      })
     }
-    if (provider === "cerebras" && model) {
-      return cerebrasModels.find((m) => m.id === model)
-    }
-    return null
-  }, [provider, model, openrouterModels, cerebrasModels])
+
+    return filtered
+  }, [modelscopeModels, modelSearchQuery])
+
+  // 获取当前选中的模型信息（使用 selectedModelInfoForPath 的别名，保持代码一致性）
+  const selectedModelInfo = selectedModelInfoForPath
 
   // 获取当前选中模型的显示名称（用于下拉框按钮显示）
   const selectedModelDisplayName = useMemo(() => {
@@ -2291,6 +2383,9 @@ export default function LLMAPITester() {
       return selectedModelInfo.name || selectedModelInfo.id
     }
     if (provider === "cerebras" && model && selectedModelInfo) {
+      return selectedModelInfo.name || selectedModelInfo.id
+    }
+    if (provider === "modelscope" && model && selectedModelInfo) {
       return selectedModelInfo.name || selectedModelInfo.id
     }
     return model || ""
@@ -2740,7 +2835,7 @@ export default function LLMAPITester() {
             </Select>
 
 
-            {provider === "openrouter" || provider === "cerebras" ? (
+            {provider === "openrouter" || provider === "cerebras" || provider === "modelscope" ? (
               <div className="flex items-center gap-2">
                 {!isCustomModel ? (
                   <>
@@ -2792,7 +2887,8 @@ export default function LLMAPITester() {
                                       </CommandItem>
                                     )
                                   })
-                                : filteredCerebrasModels.map((m) => {
+                                : provider === "cerebras"
+                                ? filteredCerebrasModels.map((m) => {
                                     // CommandItem 的 value 包含 id 和 name，以便 Command 组件也能搜索 name
                                     const searchableValue = [m.id, m.name].filter(Boolean).join(" ")
 
@@ -2809,6 +2905,33 @@ export default function LLMAPITester() {
                                           <span className="font-medium">{m.name || m.id}</span>
                                           {m.context_length && (
                                             <span className="text-xs text-muted-foreground">{m.context_length} tokens</span>
+                                          )}
+                                        </div>
+                                      </CommandItem>
+                                    )
+                                  })
+                                : filteredModelScopeModels.map((m) => {
+                                    // CommandItem 的 value 包含 id 和 name，以便 Command 组件也能搜索 name
+                                    const searchableValue = [m.id, m.name].filter(Boolean).join(" ")
+
+                                    return (
+                                      <CommandItem
+                                        key={m.id}
+                                        value={searchableValue}
+                                        onSelect={() => {
+                                          setModel(m.id)
+                                          // 不清空搜索词，保持搜索状态
+                                        }}
+                                      >
+                                        <div className="flex flex-col gap-0.5">
+                                          <span className="font-medium">{m.name || m.id}</span>
+                                          {m.context_length && (
+                                            <span className="text-xs text-muted-foreground">{m.context_length} tokens</span>
+                                          )}
+                                          {m.task_types && (
+                                            <span className="text-xs text-muted-foreground">
+                                              {Array.isArray(m.task_types) ? m.task_types.join(", ") : m.task_types}
+                                            </span>
                                           )}
                                         </div>
                                       </CommandItem>
@@ -2902,7 +3025,7 @@ export default function LLMAPITester() {
       </nav>
 
       {/* OpenRouter 和 Cerebras 模型信息显示 */}
-      {(provider === "openrouter" || provider === "cerebras") && selectedModelInfo && (
+      {(provider === "openrouter" || provider === "cerebras" || provider === "modelscope") && selectedModelInfo && (
         <div className="border-b bg-muted/30 px-4 py-3 md:px-8">
           <div className="max-w-7xl mx-auto space-y-2">
             {selectedModelInfo.description && (
@@ -2959,6 +3082,25 @@ export default function LLMAPITester() {
                   <span>发布日期: {selectedModelInfo.pub_date}</span>
                 </span>
               )}
+              {provider === "modelscope" && (() => {
+                const modelScopeInfo = selectedModelInfo as ModelScopeModel
+                return (
+                  <>
+                    {modelScopeInfo.downloads !== undefined && (
+                      <span className="flex items-center gap-1">
+                        <Download className="size-3" />
+                        <span>下载量: {modelScopeInfo.downloads.toLocaleString()}</span>
+                      </span>
+                    )}
+                    {modelScopeInfo.stars !== undefined && (
+                      <span className="flex items-center gap-1">
+                        <Star className="size-3" />
+                        <span>点赞数: {modelScopeInfo.stars.toLocaleString()}</span>
+                      </span>
+                    )}
+                  </>
+                )
+              })()}
             </div>
           </div>
         </div>
