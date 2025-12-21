@@ -1180,7 +1180,7 @@ export default function LLMAPITester() {
   const fetchOpenRouterModels = async () => {
     setIsLoadingModels(true)
     try {
-      const response = await fetch("https://openrouter-free-api.xiechengqi.top/data/openrouter-models.json")
+      const response = await fetch("https://models.xiechengqi.top/openrouter.json")
       if (response.ok) {
         const responseData = await response.json()
         console.log("[v0] Fetched OpenRouter models:", responseData)
