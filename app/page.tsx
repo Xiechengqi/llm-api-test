@@ -218,6 +218,10 @@ const deleteFileHandle = async (key: string): Promise<void> => {
 interface OpenRouterModel {
   id: string
   name?: string
+  provider?: string
+  description?: string
+  link?: string
+  pub_date?: string
   context_length?: number
   architecture?: {
     input_modalities?: string[]
@@ -231,7 +235,6 @@ interface OpenRouterModel {
     completion?: string
     [key: string]: any
   }
-  description?: string
   created?: number
   // Add other properties as per the actual API response
 }
@@ -1180,34 +1183,21 @@ export default function LLMAPITester() {
   const fetchOpenRouterModels = async () => {
     setIsLoadingModels(true)
     try {
+      // 从提供的 URL 获取模型信息
       const response = await fetch("https://models.xiechengqi.top/openrouter.json")
       if (response.ok) {
         const responseData = await response.json()
         console.log("[v0] Fetched OpenRouter models:", responseData)
-        const data = Array.isArray(responseData) ? responseData : responseData.data || []
-        setOpenrouterModels(data)
-
-        const inputMods = new Set<string>()
-        const outputMods = new Set<string>()
-        data.forEach((model: OpenRouterModel) => {
-          model.architecture?.input_modalities?.forEach((m) => inputMods.add(m))
-          model.architecture?.output_modalities?.forEach((m) => outputMods.add(m))
-        })
-        setAvailableInputModalities(Array.from(inputMods).sort())
-        setAvailableOutputModalities(Array.from(outputMods).sort())
-        console.log("[v0] Available input modalities:", Array.from(inputMods).sort())
-        console.log("[v0] Available output modalities:", Array.from(outputMods).sort())
+        // 根据 demos/openrouter.json 结构，数据在 models 字段中
+        const models = Array.isArray(responseData) ? responseData : responseData.models || responseData.data || []
+        setOpenrouterModels(models)
       } else {
         console.error("[v0] Failed to fetch OpenRouter models:", response.statusText)
         setOpenrouterModels([])
-        setAvailableInputModalities([])
-        setAvailableOutputModalities([])
       }
     } catch (error) {
       console.error("[v0] Error fetching OpenRouter models:", error)
       setOpenrouterModels([])
-      setAvailableInputModalities([])
-      setAvailableOutputModalities([])
     } finally {
       setIsLoadingModels(false)
     }
@@ -2202,30 +2192,36 @@ export default function LLMAPITester() {
   const filteredOpenRouterModels = useMemo(() => {
     let filtered = openrouterModels
 
-    if (selectedInputModalities.length > 0) {
-      // Check length of array
-      filtered = filtered.filter((model) =>
-        selectedInputModalities.every((modality) => model.architecture?.input_modalities?.includes(modality)),
-      )
-    }
-
-    if (selectedOutputModalities.length > 0) {
-      // Check length of array
-      filtered = filtered.filter((model) =>
-        selectedOutputModalities.every((modality) => model.architecture?.output_modalities?.includes(modality)),
-      )
-    }
-
-    // Filter by search query
+    // Filter by search query - 从 model id 和 name 匹配
     if (modelSearchQuery.trim()) {
       const query = modelSearchQuery.toLowerCase()
-      filtered = filtered.filter(
-        (model) => model.id.toLowerCase().includes(query) || model.name?.toLowerCase().includes(query),
-      )
+      filtered = filtered.filter((model) => {
+        const idMatch = model.id.toLowerCase().includes(query)
+        const nameMatch = model.name?.toLowerCase().includes(query) || false
+        return idMatch || nameMatch
+      })
     }
 
     return filtered
-  }, [openrouterModels, selectedInputModalities, selectedOutputModalities, modelSearchQuery])
+  }, [openrouterModels, modelSearchQuery])
+
+  // 获取当前选中的模型信息
+  const selectedModelInfo = useMemo(() => {
+    if (provider === "openrouter" && model) {
+      // 如果 model 以 :free 结尾，需要去掉 :free 来查找原始模型
+      const modelIdWithoutFree = model.endsWith(":free") ? model.slice(0, -5) : model
+      return openrouterModels.find((m) => m.id === modelIdWithoutFree)
+    }
+    return null
+  }, [provider, model, openrouterModels])
+
+  // 获取当前选中模型的显示名称（用于下拉框按钮显示）
+  const selectedModelDisplayName = useMemo(() => {
+    if (provider === "openrouter" && model && selectedModelInfo) {
+      return selectedModelInfo.name || selectedModelInfo.id
+    }
+    return model || ""
+  }, [provider, model, selectedModelInfo])
 
   const handleAddImageUrl = async () => {
     if (!imageUrl.trim()) {
@@ -2420,24 +2416,6 @@ export default function LLMAPITester() {
               </SelectContent>
             </Select>
 
-            {provider === "openrouter" && (
-              <>
-                <SimpleMultiSelect
-                  options={availableInputModalities}
-                  selected={selectedInputModalities}
-                  onChange={setSelectedInputModalities}
-                  placeholder="输入模态"
-                  className="w-[140px]"
-                />
-                <SimpleMultiSelect
-                  options={availableOutputModalities}
-                  selected={selectedOutputModalities}
-                  onChange={setSelectedOutputModalities}
-                  placeholder="输出模态"
-                  className="w-[140px]"
-                />
-              </>
-            )}
 
             {provider === "openrouter" ? (
               <div className="flex items-center gap-2">
@@ -2451,7 +2429,7 @@ export default function LLMAPITester() {
                           disabled={isLoadingModels}
                           className="w-[280px] justify-between bg-transparent"
                         >
-                          {model || (isLoadingModels ? "加载中..." : "选择模型")}
+                          {selectedModelDisplayName || (isLoadingModels ? "加载中..." : "选择模型")}
                         </Button>
                       </PopoverTrigger>
                       <PopoverContent className="w-[280px] p-0" align="start">
@@ -2464,23 +2442,32 @@ export default function LLMAPITester() {
                           <CommandList>
                             <CommandEmpty>未找到模型</CommandEmpty>
                             <CommandGroup>
-                              {filteredOpenRouterModels.map((m) => (
-                                <CommandItem
-                                  key={m.id}
-                                  value={m.id}
-                                  onSelect={() => {
-                                    setModel(m.id)
-                                    setModelSearchQuery("")
-                                  }}
-                                >
-                                  <div className="flex flex-col gap-0.5">
-                                    <span className="font-medium">{m.name || m.id}</span>
-                                    {m.context_length && (
-                                      <span className="text-xs text-muted-foreground">{m.context_length} tokens</span>
-                                    )}
-                                  </div>
-                                </CommandItem>
-                              ))}
+                              {filteredOpenRouterModels.map((m) => {
+                                // 检查是否是免费模型（name 中包含 "(free)"）
+                                const isFreeModel = m.name?.includes("(free)") || false
+                                // 如果是免费模型，id 需要添加 :free 后缀
+                                const modelIdToUse = isFreeModel ? `${m.id}:free` : m.id
+                                // CommandItem 的 value 包含 id 和 name，以便 Command 组件也能搜索 name
+                                const searchableValue = [m.id, m.name].filter(Boolean).join(" ")
+                                
+                                return (
+                                  <CommandItem
+                                    key={m.id}
+                                    value={searchableValue}
+                                    onSelect={() => {
+                                      setModel(modelIdToUse)
+                                      // 不清空搜索词，保持搜索状态
+                                    }}
+                                  >
+                                    <div className="flex flex-col gap-0.5">
+                                      <span className="font-medium">{m.name || m.id}</span>
+                                      {m.context_length && (
+                                        <span className="text-xs text-muted-foreground">{m.context_length} tokens</span>
+                                      )}
+                                    </div>
+                                  </CommandItem>
+                                )
+                              })}
                             </CommandGroup>
                           </CommandList>
                         </Command>
@@ -2567,6 +2554,40 @@ export default function LLMAPITester() {
           </div>
         )}
       </nav>
+
+      {/* OpenRouter 模型信息显示 */}
+      {provider === "openrouter" && selectedModelInfo && (
+        <div className="border-b bg-muted/30 px-4 py-3 md:px-8">
+          <div className="max-w-7xl mx-auto space-y-2">
+            {selectedModelInfo.description && (
+              <p className="text-sm text-muted-foreground leading-relaxed">{selectedModelInfo.description}</p>
+            )}
+            <div className="flex items-center gap-4 text-xs text-muted-foreground">
+              {selectedModelInfo.link && (() => {
+                // 如果 name 包含 "(free)"，link 也增加 :free
+                const isFreeModel = selectedModelInfo.name?.includes("(free)") || false
+                const linkToUse = isFreeModel ? `${selectedModelInfo.link}:free` : selectedModelInfo.link
+                return (
+                  <a
+                    href={linkToUse}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1 hover:text-primary transition-colors"
+                  >
+                    <Link className="size-3" />
+                    查看模型详情
+                  </a>
+                )
+              })()}
+              {selectedModelInfo.pub_date && (
+                <span className="flex items-center gap-1">
+                  <span>发布日期: {selectedModelInfo.pub_date}</span>
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="p-4 md:p-8">
         <div className="max-w-7xl mx-auto space-y-6">
