@@ -384,14 +384,27 @@ const extractImagesFromResponseContent = (responseContent: string): string[] => 
       responseBody = parsed.body
     }
 
+    // Check for ModelScope image generation format: body.images[0].url
+    if (responseBody.images && Array.isArray(responseBody.images)) {
+      responseBody.images.forEach((img: any) => {
+        if (img.url && (img.url.startsWith("http://") || img.url.startsWith("https://"))) {
+          images.push(img.url)
+        }
+      })
+    }
+
     // Check if it's a standard API response with choices array
     if (responseBody.choices && Array.isArray(responseBody.choices)) {
       responseBody.choices.forEach((choice: any) => {
         // Check for images in message.images array
         if (choice.message && choice.message.images && Array.isArray(choice.message.images)) {
           choice.message.images.forEach((img: any) => {
-            if (img.image_url && img.image_url.url && img.image_url.url.startsWith("data:image")) {
-              images.push(img.image_url.url)
+            if (img.image_url && img.image_url.url) {
+              const url = img.image_url.url
+              // Accept both base64 data URLs and HTTP/HTTPS URLs
+              if (url.startsWith("data:image") || url.startsWith("http://") || url.startsWith("https://")) {
+                images.push(url)
+              }
             }
           })
         }
@@ -1128,17 +1141,32 @@ export default function LLMAPITester() {
     try {
       const startTime = performance.now()
 
-      const requestBody = {
+      // 检查是否是 ModelScope 的图片生成模型
+      const isModelScopeImageGeneration = provider === "modelscope" && selectedModelInfoForPath && (() => {
+        const modelScopeInfo = selectedModelInfoForPath as ModelScopeModel
+        const taskTypes = modelScopeInfo.task_types
+        return Array.isArray(taskTypes)
+          ? taskTypes.includes("生成图片")
+          : typeof taskTypes === "string" && taskTypes.includes("生成图片")
+      })()
+
+      const requestBody: any = {
         model: model,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: "hello" },
-        ],
         max_tokens: 100, // Small token count for probe
         temperature: 1,
         top_p: 1,
         frequency_penalty: 0,
         presence_penalty: 0,
+      }
+
+      // ModelScope 图片生成模型使用 prompt 而不是 messages
+      if (isModelScopeImageGeneration) {
+        requestBody.prompt = "hello"
+      } else {
+        requestBody.messages = [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: "hello" },
+        ]
       }
 
       const response = await fetch(fullApiPath, {
@@ -1519,15 +1547,30 @@ export default function LLMAPITester() {
       { role: "system", content: finalSystemPrompt },
     ]
 
-    const requestBody = {
+    // 检查是否是 ModelScope 的图片生成模型
+    const isModelScopeImageGeneration = provider === "modelscope" && selectedModelInfoForPath && (() => {
+      const modelScopeInfo = selectedModelInfoForPath as ModelScopeModel
+      const taskTypes = modelScopeInfo.task_types
+      return Array.isArray(taskTypes)
+        ? taskTypes.includes("生成图片")
+        : typeof taskTypes === "string" && taskTypes.includes("生成图片")
+    })()
+
+    const requestBody: any = {
       model: modelToUse,
-      messages: messages,
       max_tokens: maxTokens,
       temperature,
       top_p: topP,
       frequency_penalty: frequencyPenalty,
       presence_penalty: presencePenalty,
       stream: stream, // Include stream parameter
+    }
+
+    // ModelScope 图片生成模型使用 prompt 而不是 messages
+    if (isModelScopeImageGeneration) {
+      requestBody.prompt = finalUserMessage
+    } else {
+      requestBody.messages = messages
     }
 
     // Generate cURL command, handling potential undefined values for headers
@@ -1593,41 +1636,57 @@ export default function LLMAPITester() {
       const requestContent = JSON.stringify(messages) // Store the actual messages array
 
       let responseContent = ""
-      const messageContent = parsedResponse?.choices?.[0]?.message?.content
-      const anthropicContent = parsedResponse?.content?.[0]?.text
-
-      if (messageContent || parsedResponse?.choices?.[0]?.message) {
-        // Check for reasoning_details (new format for deep thinking models like OLMo, DeepSeek R1, etc.)
-        const reasoningDetails = parsedResponse?.choices?.[0]?.message?.reasoning_details?.[0]?.text
-        const reasoningContent =
-          parsedResponse?.choices?.[0]?.message?.reasoning_content || parsedResponse?.choices?.[0]?.message?.reasoning
-
-        if (reasoningDetails) {
-          // New format: reasoning_details array with text field
-          if (messageContent) {
-            responseContent = `<Thinking>\n${reasoningDetails}\n</Thinking>\n\n${messageContent}`
-          } else {
-            // If content is empty, just use the reasoning
-            responseContent = reasoningDetails
-          }
-        } else if (reasoningContent) {
-          // Legacy format: reasoning_content or reasoning field
-          if (messageContent) {
-            responseContent = `<Thinking>\n${reasoningContent}\n</Thinking>\n\n${messageContent}`
-          } else {
-            responseContent = reasoningContent
-          }
-        } else if (messageContent) {
-          // Regular content without separate reasoning
-          responseContent = messageContent
+      
+      // Check for ModelScope image generation format: images[0].url
+      // parsedResponse 是 API 直接返回的内容，所以检查 parsedResponse.images
+      const modelScopeImages = parsedResponse?.images
+      if (modelScopeImages && Array.isArray(modelScopeImages) && modelScopeImages.length > 0) {
+        // ModelScope 图片生成响应：显示图片 URL
+        const imageUrls = modelScopeImages
+          .map((img: any) => img.url)
+          .filter((url: any) => url && (url.startsWith("http://") || url.startsWith("https://")))
+        if (imageUrls.length > 0) {
+          responseContent = imageUrls.join("\n")
         } else {
-          // Fallback to full message object
-          responseContent = JSON.stringify(parsedResponse?.choices?.[0]?.message)
+          responseContent = JSON.stringify(parsedResponse)
         }
-      } else if (anthropicContent) {
-        responseContent = anthropicContent
       } else {
-        responseContent = JSON.stringify(parsedResponse)
+        const messageContent = parsedResponse?.choices?.[0]?.message?.content
+        const anthropicContent = parsedResponse?.content?.[0]?.text
+
+        if (messageContent || parsedResponse?.choices?.[0]?.message) {
+          // Check for reasoning_details (new format for deep thinking models like OLMo, DeepSeek R1, etc.)
+          const reasoningDetails = parsedResponse?.choices?.[0]?.message?.reasoning_details?.[0]?.text
+          const reasoningContent =
+            parsedResponse?.choices?.[0]?.message?.reasoning_content || parsedResponse?.choices?.[0]?.message?.reasoning
+
+          if (reasoningDetails) {
+            // New format: reasoning_details array with text field
+            if (messageContent) {
+              responseContent = `<Thinking>\n${reasoningDetails}\n</Thinking>\n\n${messageContent}`
+            } else {
+              // If content is empty, just use the reasoning
+              responseContent = reasoningDetails
+            }
+          } else if (reasoningContent) {
+            // Legacy format: reasoning_content or reasoning field
+            if (messageContent) {
+              responseContent = `<Thinking>\n${reasoningContent}\n</Thinking>\n\n${messageContent}`
+            } else {
+              responseContent = reasoningContent
+            }
+          } else if (messageContent) {
+            // Regular content without separate reasoning
+            responseContent = messageContent
+          } else {
+            // Fallback to full message object
+            responseContent = JSON.stringify(parsedResponse?.choices?.[0]?.message)
+          }
+        } else if (anthropicContent) {
+          responseContent = anthropicContent
+        } else {
+          responseContent = JSON.stringify(parsedResponse)
+        }
       }
 
       const historyItem: HistoryItem = {
