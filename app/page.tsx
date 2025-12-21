@@ -55,6 +55,9 @@ import {
   loadHistoryFromDB,
   saveImagesToDB,
   loadImagesFromDB,
+  saveResponseImagesToDB,
+  loadResponseImagesFromDB,
+  deleteResponseImagesFromDB,
   migrateFromLocalStorage,
   clearAllData,
 } from "@/lib/indexed-db"
@@ -369,13 +372,38 @@ const extractImagesFromRequestContent = (requestContent: string): string[] => {
   }
 }
 
-const extractImagesFromResponseContent = (responseContent: string): string[] => {
+// 提取响应中的图片（同步版本，从状态中获取）
+const extractImagesFromResponseContent = (
+  responseContent: string,
+  responseRaw: string,
+  responseImagesMap?: Map<number, string[]>,
+  historyTimestamp?: number,
+): string[] => {
   if (!responseContent || responseContent.trim() === "") {
     return []
   }
 
+  // 如果提供了 historyTimestamp 和 responseImagesMap，优先从状态中获取
+  if (historyTimestamp !== undefined && responseImagesMap) {
+    const savedImages = responseImagesMap.get(historyTimestamp)
+    if (savedImages && savedImages.length > 0) {
+      return savedImages
+    }
+  }
+
+  // 尝试从 responseContent 中提取 base64 图片（如果是 base64 格式）
+  if (responseContent.startsWith("data:image")) {
+    return [responseContent]
+  }
+
+  // 如果 responseContent 包含多个 base64 图片（用换行符分隔）
+  if (responseContent.includes("\n") && responseContent.split("\n").every(line => line.startsWith("data:image"))) {
+    return responseContent.split("\n").filter(Boolean)
+  }
+
   try {
-    const parsed = JSON.parse(responseContent)
+    // 尝试从 responseRaw 解析
+    const parsed = JSON.parse(responseRaw)
     const images: string[] = []
 
     // Handle wrapped response format (with body property)
@@ -416,6 +444,27 @@ const extractImagesFromResponseContent = (responseContent: string): string[] => 
     console.error("[v0] Error extracting images from response:", error)
     return []
   }
+}
+
+// 异步加载历史记录的响应图片
+const loadResponseImagesForHistory = async (historyItems: HistoryItem[]) => {
+  const imagesMap = new Map<number, string[]>()
+  
+  for (const item of historyItems) {
+    try {
+      const savedImages = await loadResponseImagesFromDB(item.timestamp)
+      if (savedImages.length > 0) {
+        const base64Images = savedImages.map((img) => img.base64 || img.url || "").filter(Boolean)
+        if (base64Images.length > 0) {
+          imagesMap.set(item.timestamp, base64Images)
+        }
+      }
+    } catch (error) {
+      console.warn(`[v0] Failed to load response images for timestamp ${item.timestamp}:`, error)
+    }
+  }
+  
+  return imagesMap
 }
 
 const formatRequestContentForDisplay = (requestContent: string): string => {
@@ -560,6 +609,7 @@ export default function LLMAPITester() {
   const [modelHistory, setModelHistory] = useState<ModelHistoryItem[]>([])
   const [modelHistoryPage, setModelHistoryPage] = useState(1)
   const modelHistoryPageSize = 5
+  const [responseImagesMap, setResponseImagesMap] = useState<Map<number, string[]>>(new Map())
   const [visibleApiKeys, setVisibleApiKeys] = useState<Set<string>>(new Set())
 
   const [availableInputModalities, setAvailableInputModalities] = useState<string[]>([])
@@ -688,6 +738,13 @@ export default function LLMAPITester() {
         if (historyFromDB.length > 0) {
           console.log("[v0] Loaded history from IndexedDB:", historyFromDB.length, "entries")
           setHistory(historyFromDB)
+          // 异步加载响应图片
+          loadResponseImagesForHistory(historyFromDB).then((imagesMap) => {
+            setResponseImagesMap(imagesMap)
+            console.log("[v0] Loaded response images for", imagesMap.size, "history items")
+          }).catch((error) => {
+            console.error("[v0] Failed to load response images:", error)
+          })
         } else {
           // Fallback to localStorage if no data in IndexedDB
           const savedHistory = localStorage.getItem("llm_api_history")
@@ -1636,16 +1693,26 @@ export default function LLMAPITester() {
       const requestContent = JSON.stringify(messages) // Store the actual messages array
 
       let responseContent = ""
+      let responseImagesToSave: MessageImage[] = []
       
       // Check for ModelScope image generation format: images[0].url
       // parsedResponse 是 API 直接返回的内容，所以检查 parsedResponse.images
       const modelScopeImages = parsedResponse?.images
       if (modelScopeImages && Array.isArray(modelScopeImages) && modelScopeImages.length > 0) {
-        // ModelScope 图片生成响应：显示图片 URL
+        // ModelScope 图片生成响应：直接使用图片 URL（避免 CORS 问题）
         const imageUrls = modelScopeImages
           .map((img: any) => img.url)
           .filter((url: any) => url && (url.startsWith("http://") || url.startsWith("https://")))
+        
         if (imageUrls.length > 0) {
+          // 直接使用图片 URL，不进行下载转换（避免 CORS 错误）
+          const timestamp = Date.now()
+          responseImagesToSave = imageUrls.map((url, idx) => ({
+            id: `response-${timestamp}-${idx}`,
+            type: "url" as const,
+            url: url,
+          }))
+          // 使用图片 URL 作为响应内容
           responseContent = imageUrls.join("\n")
         } else {
           responseContent = JSON.stringify(parsedResponse)
@@ -1689,15 +1756,35 @@ export default function LLMAPITester() {
         }
       }
 
+      const historyTimestamp = Date.now()
       const historyItem: HistoryItem = {
-        id: Date.now().toString(),
-        timestamp: Date.now(),
+        id: historyTimestamp.toString(),
+        timestamp: historyTimestamp,
         model: modelToUse, // Use the actual model used
         requestContent,
         requestRaw: requestCurl,
         responseContent,
         responseRaw: formattedResponse,
         duration: duration, // Store response time
+      }
+
+      // 保存响应图片到 IndexedDB（如果存在）
+      if (responseImagesToSave.length > 0) {
+        saveResponseImagesToDB(historyTimestamp, responseImagesToSave)
+          .then(() => {
+            // 更新状态中的图片映射
+            const base64Images = responseImagesToSave.map((img) => img.base64 || img.url || "").filter(Boolean)
+            if (base64Images.length > 0) {
+              setResponseImagesMap((prev) => {
+                const newMap = new Map(prev)
+                newMap.set(historyTimestamp, base64Images)
+                return newMap
+              })
+            }
+          })
+          .catch((error) => {
+            console.error("[v0] Failed to save response images to IndexedDB:", error)
+          })
       }
 
       setHistory((prev) => {
@@ -1935,8 +2022,23 @@ export default function LLMAPITester() {
   }
 
   const handleDeleteHistoryItem = (id: string) => {
+    const itemToDelete = history.find((item) => item.id === id)
     const updated = history.filter((item) => item.id !== id)
     setHistory(updated)
+    
+    // 删除对应的响应图片
+    if (itemToDelete) {
+      deleteResponseImagesFromDB(itemToDelete.timestamp).catch((error) => {
+        console.error("[v0] Failed to delete response images:", error)
+      })
+      // 从状态中移除
+      setResponseImagesMap((prev) => {
+        const newMap = new Map(prev)
+        newMap.delete(itemToDelete.timestamp)
+        return newMap
+      })
+    }
+    
     saveHistoryToDB(updated).catch((error) => {
       console.error("[v0] Failed to update history in IndexedDB:", error)
     })
@@ -1948,6 +2050,7 @@ export default function LLMAPITester() {
 
   const handleClearHistory = () => {
     setHistory([])
+    setResponseImagesMap(new Map()) // 清空响应图片映射
     clearAllData().catch((error) => {
       console.error("[v0] Failed to clear IndexedDB:", error)
     })
@@ -2908,7 +3011,9 @@ export default function LLMAPITester() {
                           disabled={isLoadingModels}
                           className="w-[280px] justify-between bg-transparent"
                         >
-                          {selectedModelDisplayName || (isLoadingModels ? "加载中..." : "选择模型")}
+                          <span className="truncate">
+                            {selectedModelDisplayName || (isLoadingModels ? "加载中..." : "选择模型")}
+                          </span>
                         </Button>
                       </PopoverTrigger>
                       <PopoverContent className="w-[280px] p-0" align="start">
@@ -4047,8 +4152,13 @@ export default function LLMAPITester() {
                             const requestContentId = `request-${item.timestamp}`
                             const responseContentId = `response-${item.timestamp}`
 
-                            // Extract images from response content
-                            const responseImages = extractImagesFromResponseContent(item.responseRaw)
+                            // Extract images from response content (优先从 IndexedDB 加载的 base64 图片)
+                            const responseImages = extractImagesFromResponseContent(
+                              item.responseContent,
+                              item.responseRaw,
+                              responseImagesMap,
+                              item.timestamp,
+                            )
 
                             return (
                               <TableRow key={item.timestamp} className="hover:bg-muted/50">

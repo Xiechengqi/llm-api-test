@@ -1,8 +1,9 @@
 // IndexedDB utility for storing history with images
 const DB_NAME = "llm-api-test-db"
-const DB_VERSION = 1
+const DB_VERSION = 2 // 升级版本以添加响应图片存储
 const HISTORY_STORE = "history"
 const SETTINGS_STORE = "settings"
+const RESPONSE_IMAGES_STORE = "responseImages" // 存储响应中的图片
 
 interface HistoryItem {
   id: string
@@ -44,6 +45,12 @@ export const initDB = (): Promise<IDBDatabase> => {
       // Create settings store if it doesn't exist
       if (!db.objectStoreNames.contains(SETTINGS_STORE)) {
         db.createObjectStore(SETTINGS_STORE, { keyPath: "key" })
+      }
+
+      // Create response images store if it doesn't exist
+      if (!db.objectStoreNames.contains(RESPONSE_IMAGES_STORE)) {
+        const responseImagesStore = db.createObjectStore(RESPONSE_IMAGES_STORE, { keyPath: "historyTimestamp" })
+        responseImagesStore.createIndex("timestamp", "historyTimestamp", { unique: true })
       }
     }
   })
@@ -173,6 +180,64 @@ export const migrateFromLocalStorage = async (): Promise<void> => {
   }
 }
 
+// Save response images to IndexedDB (associated with history timestamp)
+export const saveResponseImagesToDB = async (historyTimestamp: number, images: MessageImage[]): Promise<void> => {
+  const db = await initDB()
+  const transaction = db.transaction([RESPONSE_IMAGES_STORE], "readwrite")
+  const store = transaction.objectStore(RESPONSE_IMAGES_STORE)
+
+  return new Promise((resolve, reject) => {
+    const request = store.put({ historyTimestamp, images })
+    request.onsuccess = () => {
+      resolve()
+      db.close()
+    }
+    request.onerror = () => {
+      reject(request.error)
+      db.close()
+    }
+  })
+}
+
+// Load response images from IndexedDB
+export const loadResponseImagesFromDB = async (historyTimestamp: number): Promise<MessageImage[]> => {
+  const db = await initDB()
+  const transaction = db.transaction([RESPONSE_IMAGES_STORE], "readonly")
+  const store = transaction.objectStore(RESPONSE_IMAGES_STORE)
+
+  return new Promise((resolve, reject) => {
+    const request = store.get(historyTimestamp)
+    request.onsuccess = () => {
+      const result = request.result
+      resolve(result?.images || [])
+      db.close()
+    }
+    request.onerror = () => {
+      reject(request.error)
+      db.close()
+    }
+  })
+}
+
+// Delete response images from IndexedDB
+export const deleteResponseImagesFromDB = async (historyTimestamp: number): Promise<void> => {
+  const db = await initDB()
+  const transaction = db.transaction([RESPONSE_IMAGES_STORE], "readwrite")
+  const store = transaction.objectStore(RESPONSE_IMAGES_STORE)
+
+  return new Promise((resolve, reject) => {
+    const request = store.delete(historyTimestamp)
+    request.onsuccess = () => {
+      resolve()
+      db.close()
+    }
+    request.onerror = () => {
+      reject(request.error)
+      db.close()
+    }
+  })
+}
+
 // Clear all data from IndexedDB
 export const clearAllData = async (): Promise<void> => {
   const db = await initDB()
@@ -191,6 +256,15 @@ export const clearAllData = async (): Promise<void> => {
   const settingsStore = settingsTransaction.objectStore(SETTINGS_STORE)
   await new Promise<void>((resolve, reject) => {
     const request = settingsStore.clear()
+    request.onsuccess = () => resolve()
+    request.onerror = () => reject(request.error)
+  })
+
+  // Clear response images
+  const responseImagesTransaction = db.transaction([RESPONSE_IMAGES_STORE], "readwrite")
+  const responseImagesStore = responseImagesTransaction.objectStore(RESPONSE_IMAGES_STORE)
+  await new Promise<void>((resolve, reject) => {
+    const request = responseImagesStore.clear()
     request.onsuccess = () => resolve()
     request.onerror = () => reject(request.error)
   })
