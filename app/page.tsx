@@ -442,7 +442,7 @@ export default function LLMAPITester() {
     timerEnabled: false,
     timerInterval: 60,
     maxTokensLimit: 8192,
-    pageSize: 10,
+    pageSize: 3,
     prompt: "", // Added prompt to default values
   }
 
@@ -3373,6 +3373,7 @@ export default function LLMAPITester() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
+                      <SelectItem value="3">3 条/页</SelectItem>
                       <SelectItem value="10">10 条/页</SelectItem>
                       <SelectItem value="50">50 条/页</SelectItem>
                       <SelectItem value="100">100 条/页</SelectItem>
