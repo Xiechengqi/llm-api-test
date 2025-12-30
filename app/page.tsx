@@ -299,6 +299,8 @@ const API_PROVIDERS = [
   },
 ]
 
+const CUSTOM_PROVIDER_STORAGE_KEY = "llm-api-test-custom-providers"
+
 interface ModelHistoryItem {
   id: string
   timestamp: number
@@ -329,6 +331,14 @@ interface MessageImage {
   base64?: string // For file type
   mimeType?: string // For file type
   name?: string // Original file name
+}
+
+interface CustomProviderConfig {
+  id: string
+  name: string
+  baseURL: string
+  apiPath: string
+  apiKey?: string
 }
 
 const extractImagesFromRequestContent = (requestContent: string): string[] => {
@@ -615,6 +625,13 @@ export default function LLMAPITester() {
   const [availableInputModalities, setAvailableInputModalities] = useState<string[]>([])
   const [availableOutputModalities, setAvailableOutputModalities] = useState<string[]>([])
 
+  const [savedProviders, setSavedProviders] = useState<CustomProviderConfig[]>([])
+  const [customProviderName, setCustomProviderName] = useState("")
+  const [customProviderError, setCustomProviderError] = useState("")
+  const [customProviderSaved, setCustomProviderSaved] = useState(false)
+  const [customProviderStatusMessage, setCustomProviderStatusMessage] = useState("")
+  const [isEditingCustomProvider, setIsEditingCustomProvider] = useState(false)
+
   const [messageImages, setMessageImages] = useState<MessageImage[]>([])
   const [imageUrl, setImageUrl] = useState("")
   const [showImageUrlInput, setShowImageUrlInput] = useState(false)
@@ -622,6 +639,35 @@ export default function LLMAPITester() {
   const [zoomedImage, setZoomedImage] = useState<MessageImage | null>(null)
 
   const { toast } = useToast()
+
+  const providerOptions = useMemo(() => {
+    const customOptions = savedProviders.map((provider) => ({
+      id: provider.id,
+      name: provider.name,
+      endpoint: provider.baseURL && provider.apiPath ? `${provider.baseURL}${provider.apiPath}` : "",
+    }))
+    return [...API_PROVIDERS, ...customOptions]
+  }, [savedProviders])
+
+  const selectedProviderOption = useMemo(
+    () => providerOptions.find((p) => p.id === provider),
+    [provider, providerOptions],
+  )
+
+  const canCurrentProviderUseCustomFields = useMemo(() => {
+    if (provider === "custom") return true
+    const isSavedCustomProvider = savedProviders.some((p) => p.id === provider)
+    if (isSavedCustomProvider) return true
+    return !selectedProviderOption?.endpoint
+  }, [provider, savedProviders, selectedProviderOption])
+
+  const shouldRenderCustomProviderFields =
+    isEditingCustomProvider && canCurrentProviderUseCustomFields && !customProviderSaved
+
+  const selectedSavedProvider = useMemo(
+    () => savedProviders.find((p) => p.id === provider),
+    [provider, savedProviders],
+  )
 
   // Use a unified base URL for API calls
   const unifiedEndpoint = baseURL.endsWith("/") ? baseURL.slice(0, -1) : baseURL // Remove trailing slash
@@ -772,6 +818,46 @@ export default function LLMAPITester() {
 
     loadData()
   }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    try {
+      const storedProviders = localStorage.getItem(CUSTOM_PROVIDER_STORAGE_KEY)
+      if (storedProviders) {
+        const parsed: CustomProviderConfig[] = JSON.parse(storedProviders)
+        if (Array.isArray(parsed)) {
+          setSavedProviders(parsed)
+        }
+      }
+    } catch (error) {
+      console.error("[v0] Failed to parse custom providers from localStorage:", error)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    localStorage.setItem(CUSTOM_PROVIDER_STORAGE_KEY, JSON.stringify(savedProviders))
+  }, [savedProviders])
+
+  useEffect(() => {
+    if (provider === "custom") return
+    const savedProvider = savedProviders.find((p) => p.id === provider)
+    if (savedProvider) {
+      setCustomProviderName(savedProvider.name)
+    } else if (API_PROVIDERS.some((p) => p.id === provider)) {
+      setCustomProviderName("")
+    }
+  }, [provider, savedProviders])
+
+  useEffect(() => {
+    setCustomProviderError("")
+  }, [provider])
+
+  useEffect(() => {
+    if (!customProviderStatusMessage) return
+    const timer = setTimeout(() => setCustomProviderStatusMessage(""), 2000)
+    return () => clearTimeout(timer)
+  }, [customProviderStatusMessage])
 
   useEffect(() => {
     const settings = {
@@ -1183,11 +1269,33 @@ export default function LLMAPITester() {
     return reloadedImages
   }
 
+  const formatResponseForDisplay = (response: Response, responseText: string) => {
+    let parsedResponse: any
+    try {
+      parsedResponse = JSON.parse(responseText)
+    } catch {
+      parsedResponse = responseText
+    }
+    return JSON.stringify(
+      {
+        status: response.status,
+        statusText: response.statusText,
+        headers: Object.fromEntries(response.headers.entries()),
+        body: parsedResponse,
+      },
+      null,
+      2,
+    )
+  }
+
   const runProbeTest = async () => {
     if (!apiKey || !model || !fullApiPath) return // Added fullApiPath check
     if (isProbeTesting) return // 防止重复点击
 
     setIsProbeTesting(true)
+    setError("")
+    setRequestData("")
+    setResponseData("")
     toast({
       title: "探针测试开始",
       description: `提供商: ${provider}, 模型: ${model}`,
@@ -1226,6 +1334,13 @@ export default function LLMAPITester() {
         ]
       }
 
+      const probeCurl = `curl ${fullApiPath} \\
+  -X POST \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer ${apiKey}" \\
+  -d '${JSON.stringify(requestBody, null, 2).replace(/\n/g, "\n  ")}'`
+      setRequestData(probeCurl)
+
       const response = await fetch(fullApiPath, {
         method: "POST",
         headers: {
@@ -1241,8 +1356,10 @@ export default function LLMAPITester() {
 
       // Check if response is JSON
       const contentType = response.headers.get("content-type")
+      const responseText = await response.text()
+      setResponseData(formatResponseForDisplay(response, responseText))
+
       if (!contentType?.includes("application/json")) {
-        const text = await response.text()
         setProbeStatus("error")
         saveToModelHistory("error", duration)
         toast({
@@ -1255,9 +1372,14 @@ export default function LLMAPITester() {
         return
       }
 
-      const data = await response.json()
+      let data: any
+      try {
+        data = JSON.parse(responseText)
+      } catch {
+        data = null
+      }
 
-      if (response.ok && data.choices?.[0]?.message) {
+      if (response.ok && data?.choices?.[0]?.message) {
         setProbeStatus("success")
         saveToModelHistory("success", duration)
         toast({
@@ -1272,13 +1394,22 @@ export default function LLMAPITester() {
         toast({
           variant: "destructive",
           title: "探针测试失败",
-          description: data.error?.message || "API 返回异常",
+          description: data?.error?.message || "API 返回异常",
           duration: 3000, // 3 seconds
         })
       }
     } catch (error) {
       setProbeStatus("error")
       setProbeDuration(null)
+      setResponseData(
+        JSON.stringify(
+          {
+            error: error instanceof Error ? error.message : "Unknown Error",
+          },
+          null,
+          2,
+        ),
+      )
       saveToModelHistory("error", null)
       toast({
         variant: "destructive",
@@ -1306,6 +1437,9 @@ export default function LLMAPITester() {
 
   const handleProviderChange = (providerId: string) => {
     setProvider(providerId)
+    setCustomProviderSaved(false)
+    setCustomProviderStatusMessage("")
+    setIsEditingCustomProvider(false)
     const selectedProvider = API_PROVIDERS.find((p) => p.id === providerId)
     if (selectedProvider) {
       if (selectedProvider.endpoint) {
@@ -1323,6 +1457,21 @@ export default function LLMAPITester() {
         setBaseURL("")
         setApiPath("/v1/chat/completions") // Default path for custom provider
       }
+      setCustomProviderName(selectedProvider.id === "custom" ? "" : selectedProvider.name)
+    } else {
+      const savedProvider = savedProviders.find((p) => p.id === providerId)
+      if (savedProvider) {
+        setBaseURL(savedProvider.baseURL)
+        setApiPath(savedProvider.apiPath)
+        if (savedProvider.apiKey) {
+          setApiKey(savedProvider.apiKey)
+        }
+        setCustomProviderName(savedProvider.name)
+      } else {
+        setBaseURL("")
+        setApiPath("/v1/chat/completions")
+        setCustomProviderName("")
+      }
     }
 
     if (providerId === "openrouter") {
@@ -1335,6 +1484,77 @@ export default function LLMAPITester() {
       setBaseURL("https://api-inference.modelscope.cn")
       setApiPath("/v1/chat/completions") // 默认路径，实际会根据 task_types 在 fullApiPath 中覆盖
     }
+  }
+
+  const handleSaveCustomProvider = () => {
+    setCustomProviderError("")
+    const trimmedName = customProviderName.trim()
+    const trimmedBaseURL = baseURL.trim()
+    const trimmedApiPath = apiPath.trim()
+
+    if (!trimmedName) {
+      setCustomProviderError("请输入提供商名称")
+      return
+    }
+
+    const normalizedName = trimmedName.toLowerCase()
+    const existingNames = [
+      ...API_PROVIDERS.map((p) => p.name.toLowerCase()),
+      ...savedProviders.map((p) => p.name.toLowerCase()),
+    ]
+    if (existingNames.includes(normalizedName)) {
+      setCustomProviderError("提供商名称不能重复")
+      return
+    }
+
+    if (!trimmedBaseURL) {
+      setCustomProviderError("请输入 Base URL")
+      return
+    }
+
+    if (!trimmedApiPath) {
+      setCustomProviderError("请输入 API Path")
+      return
+    }
+
+    const newProvider: CustomProviderConfig = {
+      id: `custom-${Date.now()}`,
+      name: trimmedName,
+      baseURL: trimmedBaseURL,
+      apiPath: trimmedApiPath,
+      apiKey,
+    }
+
+    setSavedProviders((prev) => [...prev, newProvider])
+    setProvider(newProvider.id)
+    setCustomProviderSaved(true)
+    setCustomProviderStatusMessage("保存成功")
+    setIsEditingCustomProvider(false)
+    toast({
+      title: "已保存自定义提供商",
+      description: `${trimmedName} 已添加到提供商列表`,
+    })
+  }
+
+  const handleDeleteCustomProvider = () => {
+    const providerToDelete = savedProviders.find((p) => p.id === provider)
+    if (!providerToDelete) return
+    setSavedProviders((prev) => prev.filter((p) => p.id !== providerToDelete.id))
+    setCustomProviderSaved(true)
+    setCustomProviderStatusMessage("删除成功")
+    setCustomProviderError("")
+    setIsEditingCustomProvider(false)
+    if (provider === providerToDelete.id) {
+      setProvider("custom")
+      setBaseURL("")
+      setApiPath("/v1/chat/completions")
+      setApiKey("")
+      setCustomProviderName("")
+    }
+    toast({
+      title: "已删除自定义提供商",
+      description: `${providerToDelete.name} 已被移除`,
+    })
   }
 
   const fetchCerebrasModels = async () => {
@@ -1957,6 +2177,11 @@ export default function LLMAPITester() {
     setShowImageUrlInput(false)
     setIsAddingImageUrl(false) // Reset loading state
     setAutoReloadImages(DEFAULT_VALUES.autoReloadImages) // Reset autoReloadImages
+    setCustomProviderName("")
+    setCustomProviderError("")
+    setCustomProviderSaved(false)
+    setCustomProviderStatusMessage("")
+    setIsEditingCustomProvider(false)
 
     // Remove specific items from localStorage
     localStorage.removeItem("llm-api-test-settings") // Clear all settings and reload defaults
@@ -2984,10 +3209,12 @@ export default function LLMAPITester() {
           <div className="ml-auto flex items-center gap-3">
             <Select value={provider} onValueChange={handleProviderChange}>
               <SelectTrigger className="w-[180px]">
-                <SelectValue placeholder="提供商">{API_PROVIDERS.find((p) => p.id === provider)?.name}</SelectValue>
+                <SelectValue placeholder="提供商">
+                  {selectedProviderOption?.name || provider}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                {API_PROVIDERS.map((p) => (
+                {providerOptions.map((p) => (
                   <SelectItem key={p.id} value={p.id}>
                     <div className="flex flex-col gap-0.5">
                       <span className="font-medium">{p.name}</span>
@@ -2997,6 +3224,21 @@ export default function LLMAPITester() {
                 ))}
               </SelectContent>
             </Select>
+            {canCurrentProviderUseCustomFields && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className={`h-9 w-9 ${isEditingCustomProvider ? "bg-muted" : ""}`}
+                onClick={() => {
+                  setIsEditingCustomProvider((prev) => !prev)
+                  setCustomProviderSaved(false)
+                  setCustomProviderStatusMessage("")
+                }}
+                title={isEditingCustomProvider ? "隐藏自定义配置" : "编辑自定义提供商"}
+              >
+                <Pencil className="size-4" />
+              </Button>
+            )}
 
 
             {provider === "openrouter" || provider === "cerebras" || provider === "modelscope" ? (
@@ -3160,33 +3402,59 @@ export default function LLMAPITester() {
           </div>
         </div>
 
-        {(provider === "custom" || !API_PROVIDERS.find((p) => p.id === provider)?.endpoint) && (
+        {shouldRenderCustomProviderFields && (
           <div className="border-t px-4 py-3 md:px-8">
-            <div className="flex items-center gap-2">
-              <Label htmlFor="baseURL" className="text-sm font-medium whitespace-nowrap">
-                Base URL
-              </Label>
-              <Input
-                id="baseURL"
-                value={baseURL}
-                onChange={(e) => setBaseURL(e.target.value)}
-                placeholder="https://api.example.com"
-                className="max-w-2xl"
-              />
-            </div>
-            <div className="flex items-center gap-2 mt-2">
-              <Label htmlFor="apiPath" className="text-sm font-medium whitespace-nowrap">
-                API Path
-              </Label>
-              <Input
-                id="apiPath"
-                value={apiPath}
-                onChange={(e) => setApiPath(e.target.value)}
-                placeholder="/v1/chat/completions"
-                className="max-w-2xl"
-              />
+            <div className="flex flex-col gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  id="customProviderName"
+                  value={customProviderName}
+                  onChange={(e) => {
+                    setCustomProviderName(e.target.value)
+                    if (customProviderError) setCustomProviderError("")
+                    setCustomProviderSaved(false)
+                    setCustomProviderStatusMessage("")
+                  }}
+                  placeholder="提供商名称"
+                  className="min-w-[140px] flex-1"
+                />
+                <Input
+                  id="baseURL"
+                  value={baseURL}
+                  onChange={(e) => {
+                    setBaseURL(e.target.value)
+                    setCustomProviderSaved(false)
+                    setCustomProviderStatusMessage("")
+                  }}
+                  placeholder="https://api.example.com"
+                  className="min-w-[180px] flex-1"
+                />
+                <Input
+                  id="apiPath"
+                  value={apiPath}
+                  onChange={(e) => {
+                    setApiPath(e.target.value)
+                    setCustomProviderSaved(false)
+                    setCustomProviderStatusMessage("")
+                  }}
+                  placeholder="/v1/chat/completions"
+                  className="min-w-[160px] flex-1"
+                />
+                <Button size="sm" onClick={handleSaveCustomProvider}>
+                  保存
+                </Button>
+                {selectedSavedProvider && (
+                  <Button variant="destructive" size="sm" onClick={handleDeleteCustomProvider}>
+                    删除
+                  </Button>
+                )}
+              </div>
+              {customProviderError && <p className="text-xs text-destructive">{customProviderError}</p>}
             </div>
           </div>
+        )}
+        {!shouldRenderCustomProviderFields && customProviderStatusMessage && (
+          <div className="border-t px-4 py-2 text-xs text-emerald-600 md:px-8">{customProviderStatusMessage}</div>
         )}
       </nav>
 
@@ -3338,7 +3606,7 @@ export default function LLMAPITester() {
                               })}
                             </TableCell>
                             <TableCell className="text-sm">
-                              {API_PROVIDERS.find((p) => p.id === item.provider)?.name || item.provider}
+                              {providerOptions.find((p) => p.id === item.provider)?.name || item.provider}
                             </TableCell>
                             <TableCell className="text-sm font-mono">{item.model}</TableCell>
                             <TableCell className="text-sm font-mono">
