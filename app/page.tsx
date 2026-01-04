@@ -1,517 +1,67 @@
 "use client"
 
-import { TableHeader } from "@/components/ui/table"
-
-import { CardDescription } from "@/components/ui/card"
-import {
-  Copy,
-  Pencil,
-  List,
-  Eye,
-  EyeOff,
-  RotateCcw,
-  Trash2,
-  ChevronLeft,
-  ChevronRight,
-  ChevronDown,
-  ChevronUp,
-  Play,
-  StopCircle,
-  Download,
-  Zap,
-  Activity,
-  Check,
-  FileText,
-  Upload,
-  ImageIcon,
-  X,
-  Link,
-  ZoomIn,
-  Loader2,
-  RefreshCw,
-  Star,
-  Heart,
-} from "lucide-react" // Import Copy, Pencil, List, Eye, EyeOff, RotateCcw, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Calendar, Check, Clock, X, Play, StopCircle icons
-
-import { useState, useEffect, useRef, useMemo, useCallback } from "react" // Import useRef, useMemo, useCallback
-import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { Textarea } from "@/components/ui/textarea"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Slider } from "@/components/ui/slider"
+import { useState, useEffect, useRef, useMemo, useCallback, useReducer } from "react" // Import useRef, useMemo, useCallback
+import type React from "react"
 import { useToast } from "@/hooks/use-toast"
-import { Toaster } from "@/components/ui/toaster"
-import { TableBody, TableCell, TableHead, TableRow, Table } from "@/components/ui/table" // Import Table components
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { SimpleMultiSelect } from "@/components/ui/simple-multi-select"
-import { Dialog, DialogContent } from "@/components/ui/dialog"
+import { Navbar } from "@/components/navbar"
+import { AppShell } from "@/components/app-shell"
+import { MainDashboard } from "@/components/main-dashboard"
+import { SelectedModelInfoPanel } from "@/components/selected-model-info-panel"
+import { useAppDataBootstrap } from "@/hooks/use-app-data-bootstrap"
+import { usePersistHistoryToDB } from "@/hooks/use-persist-history-to-db"
+import { usePersistImagesToDB } from "@/hooks/use-persist-images-to-db"
+import { useHistoryActions } from "@/hooks/use-history-actions"
 
 import {
-  initDB,
-  saveHistoryToDB,
-  loadHistoryFromDB,
-  saveImagesToDB,
-  loadImagesFromDB,
+  deleteFileHandle,
+  readTextFromHandleKey,
+  saveFileHandle,
+} from "@/lib/file-handles-db"
+import { API_PROVIDERS } from "@/lib/llm/providers"
+import {
+  modelscopeHasImageGenerationTask,
+} from "@/lib/llm/content"
+import { buildMessageImageFromFile, buildMessageImageFromUrl, reloadMessageImages } from "@/lib/llm/images"
+import { fetchCerebrasModelCatalog, fetchModelScopeModelCatalog, fetchOpenRouterModelCatalog } from "@/lib/llm/model-catalog"
+import { parseResponseToContent } from "@/lib/llm/response"
+import { buildLlmRequest, buildProbeRequest } from "@/lib/llm/request"
+import { formatResponseForDisplay } from "@/lib/llm/response-format"
+import { describeFetchTextError, fetchText, isHttpUrl, pickLocalTextFile } from "@/lib/llm/text-files"
+import { preloadHttpTextSource, resolveTextSource } from "@/lib/llm/text-source"
+import { buildHistoryCsv, buildModelHistoryCsv } from "@/lib/llm/csv"
+import { downloadTextFile } from "@/lib/llm/download"
+import { copyTextToClipboard } from "@/lib/llm/clipboard"
+import { getTotalPages, slicePage } from "@/lib/llm/pagination"
+import { translateEnToZhWithFallback } from "@/lib/llm/translate"
+import type { ProbeStatus, RunState, SettingsState } from "@/lib/llm/page-state"
+import { runReducer, settingsReducer } from "@/lib/llm/page-state"
+import { loadCustomProvidersFromStorage, saveCustomProvidersToStorage } from "@/lib/llm/custom-providers"
+import {
+  SETTINGS_STORAGE_KEY,
+  saveSettingsToStorage,
+} from "@/lib/llm/settings-storage"
+import {
+  clearModelHistoryFromStorage,
+  saveModelHistoryToStorage,
+} from "@/lib/llm/model-history-storage"
+import type {
+  CerebrasModel,
+  CustomProviderConfig,
+  HistoryItem,
+  MessageImage,
+  ModelHistoryItem,
+  ModelScopeModel,
+  OpenRouterModel,
+} from "@/lib/llm/types"
+
+import {
   saveResponseImagesToDB,
   loadResponseImagesFromDB,
-  deleteResponseImagesFromDB,
-  migrateFromLocalStorage,
-  clearAllData,
 } from "@/lib/indexed-db"
-
-const DB_NAME = "llm-api-tester-db"
-const DB_VERSION = 1
-const STORE_NAME = "fileHandles"
-
-// Declare verifyFilePermission here if it's expected to be globally available or imported elsewhere
-declare global {
-  interface Window {
-    // Define verifyFilePermission if it's a global function attached to window
-    verifyFilePermission?: (handle: FileSystemFileHandle) => Promise<boolean>
-  }
-}
-
-// Assume verifyFilePermission is available globally or imported
-// If it's a locally defined function, it should be declared above or imported.
-// For the purpose of this merge, we'll assume it's correctly defined or imported elsewhere.
-// If it's expected to be a new function, it needs to be implemented.
-const verifyFilePermission = async (handle: FileSystemFileHandle): Promise<boolean> => {
-  try {
-    if (handle.queryPermission) {
-      // Check current permission status
-      const status = await handle.queryPermission({ mode: "read" })
-
-      if (status === "granted") {
-        return true
-      }
-
-      // If not granted, request permission
-      const requestStatus = await handle.requestPermission({ mode: "read" })
-      return requestStatus === "granted"
-    }
-    // Fallback for environments where queryPermission might not be available
-    return true
-  } catch (error) {
-    console.error("[v0] Error checking/requesting file permission:", error)
-    return false
-  }
-}
-
-const openDB = (): Promise<IDBDatabase> => {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION)
-    request.onerror = () => {
-      console.log("[v0] IndexedDB open error:", request.error)
-      reject(request.error)
-    }
-    request.onsuccess = () => {
-      console.log("[v0] IndexedDB opened successfully")
-      resolve(request.result)
-    }
-    request.onupgradeneeded = (event) => {
-      console.log("[v0] IndexedDB upgrade needed, creating object store")
-      const db = (event.target as IDBOpenDBRequest).result
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME)
-      }
-    }
-  })
-}
-
-const saveFileHandle = async (key: string, handle: FileSystemFileHandle): Promise<boolean> => {
-  console.log("[v0] saveFileHandle called with key:", key, "handle:", handle)
-  try {
-    const db = await openDB()
-    console.log("[v0] DB opened for saving, starting transaction...")
-
-    return new Promise((resolve) => {
-      const tx = db.transaction(STORE_NAME, "readwrite")
-      const store = tx.objectStore(STORE_NAME)
-
-      console.log("[v0] Putting handle into store...")
-      const request = store.put(handle, key)
-
-      request.onerror = (e) => {
-        console.log("[v0] Put request error:", request.error, e)
-      }
-
-      request.onsuccess = () => {
-        console.log("[v0] Put request success for:", key)
-      }
-
-      // Wait for transaction to complete, not just the put request
-      tx.oncomplete = () => {
-        console.log("[v0] Transaction completed successfully for:", key)
-        db.close()
-        resolve(true)
-      }
-
-      tx.onerror = (e) => {
-        console.log("[v0] Transaction error:", tx.error, e)
-        db.close()
-        resolve(false)
-      }
-
-      tx.onabort = (e) => {
-        console.log("[v0] Transaction aborted:", tx.error, e)
-        db.close()
-        resolve(false)
-      }
-    })
-  } catch (error) {
-    console.log("[v0] Error in saveFileHandle:", error)
-    return false
-  }
-}
-
-const getFileHandle = async (key: string): Promise<FileSystemFileHandle | null> => {
-  console.log("[v0] getFileHandle called with key:", key)
-  try {
-    const db = await openDB()
-    return new Promise((resolve) => {
-      const tx = db.transaction(STORE_NAME, "readonly")
-      const store = tx.objectStore(STORE_NAME)
-      const request = store.get(key)
-
-      request.onerror = () => {
-        console.log("[v0] Failed to get file handle:", request.error)
-        db.close()
-        resolve(null)
-      }
-
-      request.onsuccess = () => {
-        const handle = request.result || null
-        console.log("[v0] Got file handle from IndexedDB:", key, handle ? "found" : "not found")
-        db.close()
-        resolve(handle)
-      }
-    })
-  } catch (error) {
-    console.log("[v0] Error in getFileHandle:", error)
-    return null
-  }
-}
-
-const deleteFileHandle = async (key: string): Promise<void> => {
-  console.log("[v0] deleteFileHandle called with key:", key)
-  try {
-    const db = await openDB()
-    return new Promise((resolve) => {
-      const tx = db.transaction(STORE_NAME, "readwrite")
-      const store = tx.objectStore(STORE_NAME)
-      const request = store.delete(key)
-
-      tx.oncomplete = () => {
-        console.log("[v0] Delete transaction completed for:", key)
-        db.close()
-        resolve()
-      }
-
-      tx.onerror = () => {
-        console.log("[v0] Delete transaction error:", tx.error)
-        db.close()
-        resolve()
-      }
-    })
-  } catch (error) {
-    console.log("[v0] Failed to delete file handle from IndexedDB:", error)
-  }
-}
-
-interface OpenRouterModel {
-  id: string
-  name?: string
-  provider?: string
-  description?: string
-  link?: string
-  pub_date?: string
-  context_length?: number
-  architecture?: {
-    input_modalities?: string[]
-    output_modalities?: string[]
-    modality?: string
-    tokenizer?: string
-    instruct_type?: string | null
-  }
-  pricing?: {
-    prompt?: string
-    completion?: string
-    [key: string]: any
-  }
-  created?: number
-  // Add other properties as per the actual API response
-}
-
-interface CerebrasModel {
-  id: string
-  name?: string
-  provider?: string
-  description?: string
-  link?: string
-  pub_date?: string
-  context_length?: number
-  // Add other properties as per the actual API response
-}
-
-interface ModelScopeModel {
-  id: string
-  name?: string
-  provider?: string
-  description?: string
-  link?: string
-  pub_date?: string
-  time?: string // 时间
-  context_length?: number
-  task_types?: string | string[] // 可能是字符串或字符串数组
-  downloads?: number // 下载量
-  stars?: number // 点赞数
-  // Add other properties as per the actual API response
-}
-
-const API_PROVIDERS = [
-  {
-    id: "openrouter",
-    name: "OpenRouter",
-    endpoint: "https://openrouter.ai/api/v1/chat/completions",
-  },
-  {
-    id: "deepseek",
-    name: "DeepSeek",
-    endpoint: "https://api.deepseek.com/v1/chat/completions",
-  },
-  {
-    id: "cerebras",
-    name: "Cerebras",
-    endpoint: "https://api.cerebras.ai/v1/chat/completions",
-  },
-  {
-    id: "modelscope",
-    name: "ModelScope",
-    endpoint: "https://api-inference.modelscope.cn/v1/chat/completions",
-  },
-  {
-    id: "custom",
-    name: "自定义",
-    endpoint: "",
-  },
-]
-
-const CUSTOM_PROVIDER_STORAGE_KEY = "llm-api-test-custom-providers"
-
-interface ModelHistoryItem {
-  id: string
-  timestamp: number
-  provider: string
-  model: string
-  apiKey: string
-  baseURL: string
-  apiPath: string
-  status: "idle" | "success" | "error"
-  duration: number | null
-}
-
-interface HistoryItem {
-  id: string
-  timestamp: number
-  duration?: number // Response time in milliseconds
-  model: string // Add model field to HistoryItem interface
-  requestContent: string
-  requestRaw: string
-  responseContent: string
-  responseRaw: string
-}
-
-interface MessageImage {
-  id: string
-  type: "url" | "file"
-  url?: string // For URL type
-  base64?: string // For file type
-  mimeType?: string // For file type
-  name?: string // Original file name
-}
-
-interface CustomProviderConfig {
-  id: string
-  name: string
-  baseURL: string
-  apiPath: string
-  apiKey?: string
-}
-
-const extractImagesFromRequestContent = (requestContent: string): string[] => {
-  if (!requestContent || requestContent.trim() === "") {
-    return []
-  }
-
-  try {
-    const parsed = JSON.parse(requestContent)
-    const images: string[] = []
-
-    // Handle full messages array format
-    if (Array.isArray(parsed)) {
-      parsed.forEach((message: any) => {
-        // Check if this is a message object with content array
-        if (message.content && Array.isArray(message.content)) {
-          message.content.forEach((item: any) => {
-            if (item.type === "image_url" && item.image_url?.url) {
-              const url = item.image_url.url
-              // Accept both regular URLs and data:image base64 strings
-              if (url.startsWith("data:image/") || url.startsWith("http://") || url.startsWith("https://")) {
-                images.push(url)
-              }
-            }
-          })
-        } else if (message.content && typeof message.content === "string") {
-          // This part is for the old format where userMessage was a string and images were implicitly handled if any.
-          // However, the new format uses message.content array.
-          // This fallback might be needed if mixed formats are encountered or for older history entries.
-          // For now, we prioritize the structured format.
-        }
-      })
-    }
-
-    return images
-  } catch (error) {
-    if (process.env.NODE_ENV === "development") {
-      console.error("[v0] Error parsing request content for images:", error)
-    }
-    return []
-  }
-}
-
-// 提取响应中的图片（同步版本，从状态中获取）
-const extractImagesFromResponseContent = (
-  responseContent: string,
-  responseRaw: string,
-  responseImagesMap?: Map<number, string[]>,
-  historyTimestamp?: number,
-): string[] => {
-  if (!responseContent || responseContent.trim() === "") {
-    return []
-  }
-
-  // 如果提供了 historyTimestamp 和 responseImagesMap，优先从状态中获取
-  if (historyTimestamp !== undefined && responseImagesMap) {
-    const savedImages = responseImagesMap.get(historyTimestamp)
-    if (savedImages && savedImages.length > 0) {
-      return savedImages
-    }
-  }
-
-  // 尝试从 responseContent 中提取 base64 图片（如果是 base64 格式）
-  if (responseContent.startsWith("data:image")) {
-    return [responseContent]
-  }
-
-  // 如果 responseContent 包含多个 base64 图片（用换行符分隔）
-  if (responseContent.includes("\n") && responseContent.split("\n").every(line => line.startsWith("data:image"))) {
-    return responseContent.split("\n").filter(Boolean)
-  }
-
-  try {
-    // 尝试从 responseRaw 解析
-    const parsed = JSON.parse(responseRaw)
-    const images: string[] = []
-
-    // Handle wrapped response format (with body property)
-    let responseBody = parsed
-    if (parsed.body && typeof parsed.body === "object") {
-      responseBody = parsed.body
-    }
-
-    // Check for ModelScope image generation format: body.images[0].url
-    if (responseBody.images && Array.isArray(responseBody.images)) {
-      responseBody.images.forEach((img: any) => {
-        if (img.url && (img.url.startsWith("http://") || img.url.startsWith("https://"))) {
-          images.push(img.url)
-        }
-      })
-    }
-
-    // Check if it's a standard API response with choices array
-    if (responseBody.choices && Array.isArray(responseBody.choices)) {
-      responseBody.choices.forEach((choice: any) => {
-        // Check for images in message.images array
-        if (choice.message && choice.message.images && Array.isArray(choice.message.images)) {
-          choice.message.images.forEach((img: any) => {
-            if (img.image_url && img.image_url.url) {
-              const url = img.image_url.url
-              // Accept both base64 data URLs and HTTP/HTTPS URLs
-              if (url.startsWith("data:image") || url.startsWith("http://") || url.startsWith("https://")) {
-                images.push(url)
-              }
-            }
-          })
-        }
-      })
-    }
-
-    return images
-  } catch (error) {
-    console.error("[v0] Error extracting images from response:", error)
-    return []
-  }
-}
-
-// 异步加载历史记录的响应图片
-const loadResponseImagesForHistory = async (historyItems: HistoryItem[]) => {
-  const imagesMap = new Map<number, string[]>()
-  
-  for (const item of historyItems) {
-    try {
-      const savedImages = await loadResponseImagesFromDB(item.timestamp)
-      if (savedImages.length > 0) {
-        const base64Images = savedImages.map((img) => img.base64 || img.url || "").filter(Boolean)
-        if (base64Images.length > 0) {
-          imagesMap.set(item.timestamp, base64Images)
-        }
-      }
-    } catch (error) {
-      console.warn(`[v0] Failed to load response images for timestamp ${item.timestamp}:`, error)
-    }
-  }
-  
-  return imagesMap
-}
-
-const formatRequestContentForDisplay = (requestContent: string): string => {
-  try {
-    const parsed = JSON.parse(requestContent)
-
-    // Handle full messages array format
-    if (Array.isArray(parsed)) {
-      let textParts: string[] = []
-
-      parsed.forEach((message: any) => {
-        if (message.content) {
-          if (typeof message.content === "string") {
-            // For older history items or messages without explicit image_url
-            textParts.push(message.content)
-          } else if (Array.isArray(message.content)) {
-            // For messages with explicit content array (multimodal)
-            const messageParts = message.content
-              .filter((item: any) => item.type === "text")
-              .map((item: any) => item.text)
-            textParts = textParts.concat(messageParts)
-          }
-        }
-      })
-
-      return textParts.join("\n")
-    }
-
-    return requestContent
-  } catch (error) {
-    return requestContent
-  }
-}
 
 export default function LLMAPITester() {
   const DEFAULT_VALUES = {
-    provider: "openrouter" as const,
+    provider: "openrouter",
     model: "",
     apiKey: "", // Added default for apiKey
     baseURL: "https://openrouter.ai",
@@ -540,90 +90,250 @@ export default function LLMAPITester() {
     prompt: "", // Added prompt to default values
   }
 
-  const [provider, setProvider] = useState(DEFAULT_VALUES.provider)
-  const [endpoint, setEndpoint] = useState("") // This state seems redundant with baseURL, consider consolidating.
-  const [apiKey, setApiKey] = useState(DEFAULT_VALUES.apiKey)
+  const initialSettings: SettingsState = {
+    provider: DEFAULT_VALUES.provider,
+    model: DEFAULT_VALUES.model,
+    apiKey: DEFAULT_VALUES.apiKey,
+    baseURL: DEFAULT_VALUES.baseURL,
+    apiPath: DEFAULT_VALUES.apiPath,
+    systemPrompt: DEFAULT_VALUES.systemPrompt,
+    userMessage: DEFAULT_VALUES.userMessage,
+    promptFilePath: DEFAULT_VALUES.promptFilePath,
+    enablePromptFile: DEFAULT_VALUES.enablePromptFile,
+    systemPromptFilePath: DEFAULT_VALUES.systemPromptFilePath,
+    enableSystemPromptFile: DEFAULT_VALUES.enableSystemPromptFile,
+    autoReloadPrompt: DEFAULT_VALUES.autoReloadPrompt,
+    autoReloadSystemPrompt: DEFAULT_VALUES.autoReloadSystemPrompt,
+    autoReloadImages: DEFAULT_VALUES.autoReloadImages,
+    maxTokens: DEFAULT_VALUES.maxTokens,
+    temperature: DEFAULT_VALUES.temperature,
+    topP: DEFAULT_VALUES.topP,
+    frequencyPenalty: DEFAULT_VALUES.frequencyPenalty,
+    presencePenalty: DEFAULT_VALUES.presencePenalty,
+    showRawColumns: DEFAULT_VALUES.showRawColumns,
+    expandRequestContent: DEFAULT_VALUES.expandRequestContent,
+    expandResponseContent: DEFAULT_VALUES.expandResponseContent,
+    timerEnabled: DEFAULT_VALUES.timerEnabled,
+    timerInterval: DEFAULT_VALUES.timerInterval,
+    maxTokensLimit: DEFAULT_VALUES.maxTokensLimit,
+    pageSize: DEFAULT_VALUES.pageSize,
+    prompt: DEFAULT_VALUES.prompt,
+    isParametersExpanded: true,
+    isPromptFromLocalFile: false,
+    isSystemPromptFromLocalFile: false,
+    selectedInputModalities: [],
+    selectedOutputModalities: [],
+    modelSearchQuery: "",
+    availableInputModalities: [],
+    availableOutputModalities: [],
+    imageUrl: "",
+    showImageUrlInput: false,
+    isAddingImageUrl: false,
+  }
+
+  const [settingsState, dispatchSettings] = useReducer(settingsReducer, initialSettings)
+  const setSetting = <K extends keyof SettingsState>(key: K, value: SettingsState[K]) => {
+    dispatchSettings({ type: "set", key, value })
+  }
+  const dispatchSettingsPatch = useCallback(
+    (patch: Partial<SettingsState>) => dispatchSettings({ type: "patch", patch }),
+    [dispatchSettings],
+  )
+
+  const initialRunState: RunState = {
+    stream: false,
+    loading: false,
+    requestData: "",
+    responseData: "",
+    error: "",
+    responseDuration: null,
+    probeStatus: "idle",
+    probeDuration: null,
+    isProbeTesting: false,
+    isTimerRunning: false,
+  }
+
+  const [runState, dispatchRun] = useReducer(runReducer, initialRunState)
+  const setRun = <K extends keyof RunState>(key: K, value: RunState[K]) => {
+    dispatchRun({ type: "set", key, value })
+  }
+
+  const provider = settingsState.provider
+  const setProvider = (value: string) => setSetting("provider", value)
+
+  const apiKey = settingsState.apiKey
+  const setApiKey = (value: string) => setSetting("apiKey", value)
+
   const [showApiKey, setShowApiKey] = useState(false)
   const [isPromptExpanded, setIsPromptExpanded] = useState(false)
   const [isSystemPromptExpanded, setIsSystemPromptExpanded] = useState(false)
-  const [model, setModel] = useState("")
+  const model = settingsState.model
+  const setModel = (value: string) => setSetting("model", value)
+
   const [openrouterModels, setOpenrouterModels] = useState<OpenRouterModel[]>([])
   const [cerebrasModels, setCerebrasModels] = useState<CerebrasModel[]>([])
   const [modelscopeModels, setModelscopeModels] = useState<ModelScopeModel[]>([])
   const [isLoadingModels, setIsLoadingModels] = useState(false)
   const [isCustomModel, setIsCustomModel] = useState(false)
-  const [selectedInputModalities, setSelectedInputModalities] = useState<string[]>([])
-  const [selectedOutputModalities, setSelectedOutputModalities] = useState<string[]>([])
-  const [modelSearchQuery, setModelSearchQuery] = useState("")
+  const selectedInputModalities = settingsState.selectedInputModalities
+  const setSelectedInputModalities = (value: string[]) => setSetting("selectedInputModalities", value)
+
+  const selectedOutputModalities = settingsState.selectedOutputModalities
+  const setSelectedOutputModalities = (value: string[]) => setSetting("selectedOutputModalities", value)
+
+  const modelSearchQuery = settingsState.modelSearchQuery
+  const setModelSearchQuery = (value: string) => setSetting("modelSearchQuery", value)
+
+  const availableInputModalities = settingsState.availableInputModalities
+  const setAvailableInputModalities = (value: string[]) => setSetting("availableInputModalities", value)
+
+  const availableOutputModalities = settingsState.availableOutputModalities
+  const setAvailableOutputModalities = (value: string[]) => setSetting("availableOutputModalities", value)
+
+  const imageUrl = settingsState.imageUrl
+  const setImageUrl = (value: string) => setSetting("imageUrl", value)
+
+  const showImageUrlInput = settingsState.showImageUrlInput
+  const setShowImageUrlInput = (value: boolean) => setSetting("showImageUrlInput", value)
+
+  const isAddingImageUrl = settingsState.isAddingImageUrl
+  const setIsAddingImageUrl = (value: boolean) => setSetting("isAddingImageUrl", value)
+
   const [translatedDescription, setTranslatedDescription] = useState<string>("")
   const [isTranslating, setIsTranslating] = useState(false)
   const [translationError, setTranslationError] = useState<string>("")
-  const [maxTokens, setMaxTokens] = useState(DEFAULT_VALUES.maxTokens)
-  const [temperature, setTemperature] = useState(DEFAULT_VALUES.temperature)
-  const [topP, setTopP] = useState(DEFAULT_VALUES.topP)
-  const [frequencyPenalty, setFrequencyPenalty] = useState(DEFAULT_VALUES.frequencyPenalty)
-  const [presencePenalty, setPresencePenalty] = useState(DEFAULT_VALUES.presencePenalty)
-  const [stream, setStream] = useState(false) // Added stream state
-  const [loading, setLoading] = useState(false)
-  const abortControllerRef = useRef<AbortController | null>(null)
-  const [requestData, setRequestData] = useState("")
-  const [responseData, setResponseData] = useState("")
-  const [error, setError] = useState("")
-  const [maxTokensLimit, setMaxTokensLimit] = useState(DEFAULT_VALUES.maxTokensLimit)
-  const [prompt, setPrompt] = useState(DEFAULT_VALUES.prompt) // This state seems redundant with userMessage, consider consolidating.
+  const maxTokens = settingsState.maxTokens
+  const setMaxTokens = (value: number) => setSetting("maxTokens", value)
 
-  const [baseURL, setBaseURL] = useState(DEFAULT_VALUES.baseURL) // Added baseURL state
-  const [apiPath, setApiPath] = useState(DEFAULT_VALUES.apiPath) // Added apiPath state
-  const [systemPrompt, setSystemPrompt] = useState(DEFAULT_VALUES.systemPrompt) // Added systemPrompt state
-  const [userMessage, setUserMessage] = useState(DEFAULT_VALUES.userMessage) // Added userMessage state
-  const [promptFilePath, setPromptFilePath] = useState(DEFAULT_VALUES.promptFilePath)
-  const [enablePromptFile, setEnablePromptFile] = useState(DEFAULT_VALUES.enablePromptFile) // Add enablePromptFile state
-  const [isPromptFromLocalFile, setIsPromptFromLocalFile] = useState(false)
+  const temperature = settingsState.temperature
+  const setTemperature = (value: number) => setSetting("temperature", value)
+
+  const topP = settingsState.topP
+  const setTopP = (value: number) => setSetting("topP", value)
+
+  const frequencyPenalty = settingsState.frequencyPenalty
+  const setFrequencyPenalty = (value: number) => setSetting("frequencyPenalty", value)
+
+  const presencePenalty = settingsState.presencePenalty
+  const setPresencePenalty = (value: number) => setSetting("presencePenalty", value)
+
+  const stream = runState.stream
+  const setStream = (value: boolean) => setRun("stream", value)
+
+  const loading = runState.loading
+  const setLoading = (value: boolean) => setRun("loading", value)
+
+  const abortControllerRef = useRef<AbortController | null>(null)
+  const requestData = runState.requestData
+  const setRequestData = (value: string) => setRun("requestData", value)
+
+  const responseData = runState.responseData
+  const setResponseData = (value: string) => setRun("responseData", value)
+
+  const error = runState.error
+  const setError = (value: string) => setRun("error", value)
+
+  const maxTokensLimit = settingsState.maxTokensLimit
+  const setMaxTokensLimit = (value: number) => setSetting("maxTokensLimit", value)
+
+  const prompt = settingsState.prompt
+  const setPrompt = (value: string) => setSetting("prompt", value) // This state seems redundant with userMessage, consider consolidating.
+
+  const baseURL = settingsState.baseURL
+  const setBaseURL = (value: string) => setSetting("baseURL", value)
+
+  const apiPath = settingsState.apiPath
+  const setApiPath = (value: string) => setSetting("apiPath", value)
+
+  const systemPrompt = settingsState.systemPrompt
+  const setSystemPrompt = (value: string) => setSetting("systemPrompt", value)
+
+  const userMessage = settingsState.userMessage
+  const setUserMessage = (value: string) => setSetting("userMessage", value)
+
+  const promptFilePath = settingsState.promptFilePath
+  const setPromptFilePath = (value: string) => setSetting("promptFilePath", value)
+
+  const enablePromptFile = settingsState.enablePromptFile
+  const setEnablePromptFile = (value: boolean) => setSetting("enablePromptFile", value)
+
+  const isPromptFromLocalFile = settingsState.isPromptFromLocalFile
+  const setIsPromptFromLocalFile = (value: boolean) => setSetting("isPromptFromLocalFile", value)
+
   const promptFileHandleRef = useRef<FileSystemFileHandle | null>(null)
 
   const [loadedPromptContent, setLoadedPromptContent] = useState("")
   const [isExternalPromptExpanded, setIsExternalPromptExpanded] = useState(false)
 
-  const [systemPromptFilePath, setSystemPromptFilePath] = useState(DEFAULT_VALUES.systemPromptFilePath)
-  const [enableSystemPromptFile, setEnableSystemPromptFile] = useState(DEFAULT_VALUES.enableSystemPromptFile)
-  const [isSystemPromptFromLocalFile, setIsSystemPromptFromLocalFile] = useState(false)
+  const systemPromptFilePath = settingsState.systemPromptFilePath
+  const setSystemPromptFilePath = (value: string) => setSetting("systemPromptFilePath", value)
+
+  const enableSystemPromptFile = settingsState.enableSystemPromptFile
+  const setEnableSystemPromptFile = (value: boolean) => setSetting("enableSystemPromptFile", value)
+
+  const isSystemPromptFromLocalFile = settingsState.isSystemPromptFromLocalFile
+  const setIsSystemPromptFromLocalFile = (value: boolean) => setSetting("isSystemPromptFromLocalFile", value)
+
   const systemPromptFileHandleRef = useRef<FileSystemFileHandle | null>(null)
 
   const [loadedSystemPromptContent, setLoadedSystemPromptContent] = useState("")
   const [isExternalSystemPromptExpanded, setIsExternalSystemPromptExpanded] = useState(false)
 
-  const [autoReloadPrompt, setAutoReloadPrompt] = useState(DEFAULT_VALUES.autoReloadPrompt)
-  const [autoReloadSystemPrompt, setAutoReloadSystemPrompt] = useState(DEFAULT_VALUES.autoReloadSystemPrompt)
-  const [autoReloadImages, setAutoReloadImages] = useState(DEFAULT_VALUES.autoReloadImages)
+  const autoReloadPrompt = settingsState.autoReloadPrompt
+  const setAutoReloadPrompt = (value: boolean) => setSetting("autoReloadPrompt", value)
+
+  const autoReloadSystemPrompt = settingsState.autoReloadSystemPrompt
+  const setAutoReloadSystemPrompt = (value: boolean) => setSetting("autoReloadSystemPrompt", value)
+
+  const autoReloadImages = settingsState.autoReloadImages
+  const setAutoReloadImages = (value: boolean) => setSetting("autoReloadImages", value)
 
   const [history, setHistory] = useState<HistoryItem[]>([])
-  const [pageSize, setPageSize] = useState(DEFAULT_VALUES.pageSize)
+  const pageSize = settingsState.pageSize
+  const setPageSize = (value: number) => setSetting("pageSize", value)
+
   const [currentPage, setCurrentPage] = useState(1)
   const [expandedCells, setExpandedCells] = useState<Set<string>>(new Set())
   const [visibleRawCells, setVisibleRawCells] = useState<Set<string>>(new Set()) // State to track visible raw columns per history item
-  const [showRawColumns, setShowRawColumns] = useState<boolean>(DEFAULT_VALUES.showRawColumns)
-  const [expandRequestContent, setExpandRequestContent] = useState<boolean>(DEFAULT_VALUES.expandRequestContent)
-  const [expandResponseContent, setExpandResponseContent] = useState<boolean>(DEFAULT_VALUES.expandResponseContent)
+  const showRawColumns = settingsState.showRawColumns
+  const setShowRawColumns = (value: boolean) => setSetting("showRawColumns", value)
 
-  const [probeStatus, setProbeStatus] = useState<"idle" | "success" | "error">("idle")
-  const [probeDuration, setProbeDuration] = useState<number | null>(null)
-  const [isProbeTesting, setIsProbeTesting] = useState(false)
+  const expandRequestContent = settingsState.expandRequestContent
+  const setExpandRequestContent = (value: boolean) => setSetting("expandRequestContent", value)
 
-  const [timerEnabled, setTimerEnabled] = useState(DEFAULT_VALUES.timerEnabled)
-  const [timerInterval, setTimerInterval] = useState(DEFAULT_VALUES.timerInterval)
+  const expandResponseContent = settingsState.expandResponseContent
+  const setExpandResponseContent = (value: boolean) => setSetting("expandResponseContent", value)
+
+  const probeStatus = runState.probeStatus
+  const setProbeStatus = (value: ProbeStatus) => setRun("probeStatus", value)
+
+  const probeDuration = runState.probeDuration
+  const setProbeDuration = (value: number | null) => setRun("probeDuration", value)
+
+  const isProbeTesting = runState.isProbeTesting
+  const setIsProbeTesting = (value: boolean) => setRun("isProbeTesting", value)
+
+  const timerEnabled = settingsState.timerEnabled
+  const setTimerEnabled = (value: boolean) => setSetting("timerEnabled", value)
+
+  const timerInterval = settingsState.timerInterval
+  const setTimerInterval = (value: number) => setSetting("timerInterval", value)
+
   const timerRef = useRef<NodeJS.Timeout | null>(null) // Use useRef for timer
-  const [isTimerRunning, setIsTimerRunning] = useState(false) // Track if timer is active
-  const [responseDuration, setResponseDuration] = useState<number | null>(null)
-  const [isParametersExpanded, setIsParametersExpanded] = useState(true) // Default to expanded
+  const isTimerRunning = runState.isTimerRunning
+  const setIsTimerRunning = (value: boolean) => setRun("isTimerRunning", value)
+
+  const responseDuration = runState.responseDuration
+  const setResponseDuration = (value: number | null) => setRun("responseDuration", value)
+
+  const isParametersExpanded = settingsState.isParametersExpanded
+  const setIsParametersExpanded = (value: boolean) => setSetting("isParametersExpanded", value)
 
   const [modelHistory, setModelHistory] = useState<ModelHistoryItem[]>([])
   const [modelHistoryPage, setModelHistoryPage] = useState(1)
   const modelHistoryPageSize = 5
   const [responseImagesMap, setResponseImagesMap] = useState<Map<number, string[]>>(new Map())
   const [visibleApiKeys, setVisibleApiKeys] = useState<Set<string>>(new Set())
-
-  const [availableInputModalities, setAvailableInputModalities] = useState<string[]>([])
-  const [availableOutputModalities, setAvailableOutputModalities] = useState<string[]>([])
 
   const [savedProviders, setSavedProviders] = useState<CustomProviderConfig[]>([])
   const [customProviderName, setCustomProviderName] = useState("")
@@ -633,12 +343,27 @@ export default function LLMAPITester() {
   const [isEditingCustomProvider, setIsEditingCustomProvider] = useState(false)
 
   const [messageImages, setMessageImages] = useState<MessageImage[]>([])
-  const [imageUrl, setImageUrl] = useState("")
-  const [showImageUrlInput, setShowImageUrlInput] = useState(false)
-  const [isAddingImageUrl, setIsAddingImageUrl] = useState(false)
   const [zoomedImage, setZoomedImage] = useState<MessageImage | null>(null)
 
   const { toast } = useToast()
+
+  const isBootstrapped = useAppDataBootstrap({
+    dispatchSettingsPatch,
+    setMessageImages,
+    setHistory,
+    setResponseImagesMap,
+    setModelHistory,
+  })
+  usePersistHistoryToDB(history, { enabled: isBootstrapped })
+  usePersistImagesToDB(messageImages, { enabled: isBootstrapped })
+  const { clearHistory: handleClearHistory, deleteHistoryItem: handleDeleteHistoryItem } =
+    useHistoryActions({
+      history,
+      setHistory,
+      setResponseImagesMap,
+      setCurrentPage,
+      toast,
+    })
 
   const providerOptions = useMemo(() => {
     const customOptions = savedProviders.map((provider) => ({
@@ -691,14 +416,7 @@ export default function LLMAPITester() {
   const fullApiPath = useMemo(() => {
     if (provider === "modelscope" && selectedModelInfoForPath) {
       const modelScopeInfo = selectedModelInfoForPath as ModelScopeModel
-      // 如果 task_types 包含"生成图片"，使用图片生成端点
-      // task_types 可能是字符串或字符串数组
-      const taskTypes = modelScopeInfo.task_types
-      const hasImageGeneration = Array.isArray(taskTypes)
-        ? taskTypes.includes("生成图片")
-        : typeof taskTypes === "string" && taskTypes.includes("生成图片")
-      
-      if (hasImageGeneration) {
+      if (modelscopeHasImageGenerationTask(modelScopeInfo)) {
         return "https://api-inference.modelscope.cn/v1/images/generations"
       } else {
         return "https://api-inference.modelscope.cn/v1/chat/completions"
@@ -709,134 +427,16 @@ export default function LLMAPITester() {
   }, [provider, selectedModelInfoForPath, unifiedEndpoint, apiPath])
 
   useEffect(() => {
-    const initializeDB = async () => {
-      try {
-        await initDB()
-        await migrateFromLocalStorage()
-        console.log("[v0] IndexedDB initialized")
-      } catch (error) {
-        console.error("[v0] Failed to initialize IndexedDB:", error)
-      }
-    }
-    initializeDB()
-  }, [])
-
-  useEffect(() => {
-    const loadData = async () => {
-      try {
-        console.log("[v0] Loading data from storage...")
-
-        // Load settings from localStorage (without images)
-        const saved = localStorage.getItem("llm-api-test-settings")
-        if (saved) {
-          const settings = JSON.parse(saved)
-          if (settings.provider) setProvider(settings.provider)
-          if (settings.model) setModel(settings.model)
-          if (settings.apiKey) setApiKey(settings.apiKey)
-          if (settings.baseURL) setBaseURL(settings.baseURL)
-          if (settings.apiPath) setApiPath(settings.apiPath)
-          if (settings.systemPrompt !== undefined) setSystemPrompt(settings.systemPrompt)
-          if (settings.userMessage !== undefined) setUserMessage(settings.userMessage)
-          if (settings.promptFilePath !== undefined) setPromptFilePath(settings.promptFilePath)
-          if (settings.enablePromptFile !== undefined) setEnablePromptFile(settings.enablePromptFile)
-          if (settings.systemPromptFilePath !== undefined) setSystemPromptFilePath(settings.systemPromptFilePath)
-          if (settings.enableSystemPromptFile !== undefined) setEnableSystemPromptFile(settings.enableSystemPromptFile)
-          if (settings.autoReloadPrompt !== undefined) setAutoReloadPrompt(settings.autoReloadPrompt)
-          if (settings.autoReloadSystemPrompt !== undefined) setAutoReloadSystemPrompt(settings.autoReloadSystemPrompt)
-          if (settings.autoReloadImages !== undefined) setAutoReloadImages(settings.autoReloadImages)
-          if (settings.maxTokens) setMaxTokens(settings.maxTokens)
-          if (settings.temperature !== undefined) setTemperature(settings.temperature)
-          if (settings.topP !== undefined) setTopP(settings.topP)
-          if (settings.frequencyPenalty !== undefined) setFrequencyPenalty(settings.frequencyPenalty)
-          if (settings.presencePenalty !== undefined) setPresencePenalty(settings.presencePenalty)
-          if (settings.showRawColumns !== undefined) setShowRawColumns(settings.showRawColumns)
-          if (settings.expandRequestContent !== undefined) setExpandRequestContent(settings.expandRequestContent)
-          if (settings.expandResponseContent !== undefined) setExpandResponseContent(settings.expandResponseContent)
-          if (settings.timerEnabled !== undefined) setTimerEnabled(settings.timerEnabled)
-          if (settings.timerInterval !== undefined) setTimerInterval(settings.timerInterval)
-          if (settings.maxTokensLimit !== undefined) setMaxTokensLimit(settings.maxTokensLimit)
-          if (settings.pageSize !== undefined) setPageSize(settings.pageSize)
-          if (settings.prompt !== undefined) setPrompt(settings.prompt)
-          if (settings.isParametersExpanded !== undefined) setIsParametersExpanded(settings.isParametersExpanded)
-          if (settings.isPromptFromLocalFile !== undefined) setIsPromptFromLocalFile(settings.isPromptFromLocalFile)
-          if (settings.isSystemPromptFromLocalFile !== undefined)
-            setIsSystemPromptFromLocalFile(settings.isSystemPromptFromLocalFile)
-          if (settings.selectedInputModalities) setSelectedInputModalities(settings.selectedInputModalities)
-          if (settings.selectedOutputModalities) setSelectedOutputModalities(settings.selectedOutputModalities)
-          if (settings.modelSearchQuery !== undefined) setModelSearchQuery(settings.modelSearchQuery)
-          if (settings.availableInputModalities) setAvailableInputModalities(settings.availableInputModalities)
-          if (settings.availableOutputModalities) setAvailableOutputModalities(settings.availableOutputModalities)
-          if (settings.imageUrl !== undefined) setImageUrl(settings.imageUrl)
-          if (settings.showImageUrlInput !== undefined) setShowImageUrlInput(settings.showImageUrlInput)
-          if (settings.isAddingImageUrl !== undefined) setIsAddingImageUrl(settings.isAddingImageUrl)
-        }
-
-        console.log("[v0] Loading images from IndexedDB...")
-        const imagesFromDB = await loadImagesFromDB()
-        console.log("[v0] Loaded images from IndexedDB:", imagesFromDB.length, "images")
-        if (imagesFromDB.length > 0) {
-          setMessageImages(imagesFromDB)
-          console.log("[v0] Set messageImages state with", imagesFromDB.length, "images")
-        }
-
-        console.log("[v0] Loading history from IndexedDB...")
-        const historyFromDB = await loadHistoryFromDB()
-        if (historyFromDB.length > 0) {
-          console.log("[v0] Loaded history from IndexedDB:", historyFromDB.length, "entries")
-          setHistory(historyFromDB)
-          // 异步加载响应图片
-          loadResponseImagesForHistory(historyFromDB).then((imagesMap) => {
-            setResponseImagesMap(imagesMap)
-            console.log("[v0] Loaded response images for", imagesMap.size, "history items")
-          }).catch((error) => {
-            console.error("[v0] Failed to load response images:", error)
-          })
-        } else {
-          // Fallback to localStorage if no data in IndexedDB
-          const savedHistory = localStorage.getItem("llm_api_history")
-          if (savedHistory) {
-            const parsedHistory = JSON.parse(savedHistory)
-            setHistory(parsedHistory)
-            // Save to IndexedDB for future use
-            await saveHistoryToDB(parsedHistory)
-          }
-        }
-
-        // Load model history from localStorage
-        const savedModelHistory = localStorage.getItem("modelHistory")
-        if (savedModelHistory) {
-          try {
-            setModelHistory(JSON.parse(savedModelHistory))
-          } catch (error) {
-            console.error("Failed to load model history:", error)
-          }
-        }
-      } catch (error) {
-        console.error("[v0] Error loading data:", error)
-      }
-    }
-
-    loadData()
-  }, [])
-
-  useEffect(() => {
     if (typeof window === "undefined") return
-    try {
-      const storedProviders = localStorage.getItem(CUSTOM_PROVIDER_STORAGE_KEY)
-      if (storedProviders) {
-        const parsed: CustomProviderConfig[] = JSON.parse(storedProviders)
-        if (Array.isArray(parsed)) {
-          setSavedProviders(parsed)
-        }
-      }
-    } catch (error) {
-      console.error("[v0] Failed to parse custom providers from localStorage:", error)
+    const providers = loadCustomProvidersFromStorage(localStorage)
+    if (providers.length > 0) {
+      setSavedProviders(providers)
     }
   }, [])
 
   useEffect(() => {
     if (typeof window === "undefined") return
-    localStorage.setItem(CUSTOM_PROVIDER_STORAGE_KEY, JSON.stringify(savedProviders))
+    saveCustomProvidersToStorage(localStorage, savedProviders)
   }, [savedProviders])
 
   useEffect(() => {
@@ -860,105 +460,8 @@ export default function LLMAPITester() {
   }, [customProviderStatusMessage])
 
   useEffect(() => {
-    const settings = {
-      provider,
-      model,
-      apiKey,
-      baseURL,
-      apiPath,
-      systemPrompt,
-      userMessage,
-      promptFilePath,
-      enablePromptFile,
-      systemPromptFilePath,
-      enableSystemPromptFile,
-      autoReloadPrompt,
-      autoReloadSystemPrompt,
-      autoReloadImages,
-      maxTokens,
-      temperature,
-      topP,
-      frequencyPenalty,
-      presencePenalty,
-      showRawColumns,
-      expandRequestContent,
-      expandResponseContent,
-      timerEnabled,
-      timerInterval,
-      maxTokensLimit,
-      pageSize,
-      prompt,
-      isParametersExpanded,
-      isPromptFromLocalFile,
-      isSystemPromptFromLocalFile,
-      // Changed from Set to Array to match the useState declaration
-      selectedInputModalities: Array.from(selectedInputModalities), // Convert Set to Array
-      selectedOutputModalities: Array.from(selectedOutputModalities), // Convert Set to Array
-      modelSearchQuery,
-      availableInputModalities,
-      availableOutputModalities,
-      imageUrl,
-      showImageUrlInput,
-      isAddingImageUrl,
-    }
-    localStorage.setItem("llm-api-test-settings", JSON.stringify(settings))
-  }, [
-    provider,
-    model,
-    apiKey,
-    baseURL,
-    apiPath,
-    systemPrompt,
-    userMessage,
-    promptFilePath,
-    enablePromptFile,
-    systemPromptFilePath,
-    enableSystemPromptFile,
-    autoReloadPrompt,
-    autoReloadSystemPrompt,
-    autoReloadImages,
-    maxTokens,
-    temperature,
-    topP,
-    frequencyPenalty,
-    presencePenalty,
-    showRawColumns,
-    expandRequestContent,
-    expandResponseContent,
-    timerEnabled,
-    timerInterval,
-    maxTokensLimit,
-    pageSize,
-    prompt,
-    isParametersExpanded,
-    isPromptFromLocalFile,
-    isSystemPromptFromLocalFile,
-    selectedInputModalities,
-    selectedOutputModalities,
-    modelSearchQuery,
-    availableInputModalities,
-    availableOutputModalities,
-    imageUrl,
-    showImageUrlInput,
-    isAddingImageUrl,
-  ])
-
-  useEffect(() => {
-    if (typeof window !== "undefined" && history.length > 0) {
-      saveHistoryToDB(history).catch((error) => {
-        console.error("[v0] Failed to save history to IndexedDB:", error)
-      })
-    }
-  }, [history])
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      console.log("[v0] Saving images to IndexedDB, count:", messageImages.length)
-      saveImagesToDB(messageImages).catch((error) => {
-        console.error("[v0] Failed to save images to IndexedDB:", error)
-      })
-    }
-  }, [messageImages])
+    saveSettingsToStorage(localStorage, settingsState)
+  }, [settingsState])
 
   const saveToModelHistory = (status: "idle" | "success" | "error", duration: number | null) => {
     const newItem: ModelHistoryItem = {
@@ -985,21 +488,9 @@ export default function LLMAPITester() {
 
   const readLocalFile = async (filePath: string): Promise<string | null> => {
     try {
-      const response = await fetch(filePath)
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
-      }
-      const content = await response.text()
-      return content
+      return await fetchText(filePath)
     } catch (error) {
-      let errorMessage = "无法读取指定的文件路径"
-
-      if (error instanceof TypeError && error.message.includes("fetch")) {
-        errorMessage =
-          "跨域访问被阻止（CORS）。请确保文件服务器支持 CORS，或使用支持 CORS 的文件托管服务（如 GitHub Gist、Pastebin 等）。"
-      } else if (error instanceof Error) {
-        errorMessage = error.message
-      }
+      const errorMessage = describeFetchTextError(error)
 
       toast({
         variant: "destructive",
@@ -1014,98 +505,49 @@ export default function LLMAPITester() {
     console.log("[v0] handleLocalFileSelect called with type:", type)
     console.log("[v0] enablePromptFile:", enablePromptFile, "enableSystemPromptFile:", enableSystemPromptFile)
 
-    const isInIframe = window.self !== window.top
-
     try {
-      // Check if File System Access API is supported and not in iframe
-      if ("showOpenFilePicker" in window && !isInIframe) {
-        console.log("[v0] Using File System Access API")
-        const [fileHandle] = await (window as any).showOpenFilePicker({
-          types: [
-            {
-              description: "Text Files",
-              accept: {
-                "text/plain": [".txt"],
-                "text/markdown": [".md"],
-              },
-            },
-          ],
-          multiple: false,
-        })
+      const picked = await pickLocalTextFile()
+      if (!picked) {
+        console.log("[v0] No file selected")
+        return null
+      }
 
-        const file = await fileHandle.getFile()
-        const content = await file.text()
-        console.log("[v0] File loaded successfully:", file.name, "Content length:", content.length)
+      const { content, fileName, handle } = picked
+      console.log("[v0] File loaded successfully:", fileName, "Content length:", content.length)
 
-        if (type === "prompt") {
-          promptFileHandleRef.current = fileHandle
-          const saved = await saveFileHandle("promptFileHandle", fileHandle)
+      if (type === "prompt") {
+        promptFileHandleRef.current = handle
+        if (handle) {
+          const saved = await saveFileHandle("promptFileHandle", handle)
           console.log("[v0] Prompt file handle save result:", saved)
-          setIsPromptFromLocalFile(true)
-          setLoadedPromptContent(content)
-          setPromptFilePath(file.name)
-          toast({
-            title: "文件加载成功",
-            description: `已加载本地文件: ${file.name}`,
-          })
-          return content
-        } else {
-          systemPromptFileHandleRef.current = fileHandle
-          const saved = await saveFileHandle("systemPromptFileHandle", fileHandle)
-          console.log("[v0] System prompt file handle save result:", saved)
-          setIsSystemPromptFromLocalFile(true)
-          setLoadedSystemPromptContent(content)
-          setSystemPromptFilePath(file.name)
-          toast({
-            title: "文件加载成功",
-            description: `已加载本地文件: ${file.name}`,
-          })
-          return content
         }
+        setIsPromptFromLocalFile(true)
+        setLoadedPromptContent(content)
+        setPromptFilePath(fileName)
+        toast({
+          title: "文件加载成功",
+          description: `已加载本地文件: ${fileName}`,
+        })
+        return content
       }
-    } catch (error) {
-      console.log("[v0] File System Access API failed, falling back to input method:", error)
-      // Fall through to fallback method
-    }
 
-    console.log("[v0] Using fallback file input method")
-    return new Promise<string | null>((resolve) => {
-      const input = document.createElement("input")
-      input.type = "file"
-      input.accept = ".txt,.md"
-      input.onchange = async (e: any) => {
-        const file = e.target.files?.[0]
-        if (file) {
-          console.log("[v0] Fallback file selected:", file.name)
-          const content = await file.text()
-          if (type === "prompt") {
-            promptFileHandleRef.current = null
-            setIsPromptFromLocalFile(true)
-            setLoadedPromptContent(content)
-            setPromptFilePath(file.name)
-            toast({
-              title: "文件加载成功",
-              description: `已加载本地文件: ${file.name}`,
-            })
-            resolve(content)
-          } else {
-            systemPromptFileHandleRef.current = null
-            setIsSystemPromptFromLocalFile(true)
-            setLoadedSystemPromptContent(content)
-            setSystemPromptFilePath(file.name)
-            toast({
-              title: "文件加载成功",
-              description: `已加载本地文件: ${file.name}`,
-            })
-            resolve(content)
-          }
-        } else {
-          console.log("[v0] No file selected in fallback method")
-          resolve(null)
-        }
+      systemPromptFileHandleRef.current = handle
+      if (handle) {
+        const saved = await saveFileHandle("systemPromptFileHandle", handle)
+        console.log("[v0] System prompt file handle save result:", saved)
       }
-      input.click()
-    })
+      setIsSystemPromptFromLocalFile(true)
+      setLoadedSystemPromptContent(content)
+      setSystemPromptFilePath(fileName)
+      toast({
+        title: "文件加载成功",
+        description: `已加载本地文件: ${fileName}`,
+      })
+      return content
+    } catch (error) {
+      console.log("[v0] File select failed:", error)
+      return null
+    }
   }
 
   const reloadLocalFile = async (type: "prompt" | "systemPrompt"): Promise<string | null> => {
@@ -1116,43 +558,15 @@ export default function LLMAPITester() {
     console.log(`[v0] reloadLocalFile called for ${type}`)
     console.log(`[v0] Current ref handle:`, fileHandleRef.current ? "exists" : "null")
 
-    // Try to get handle from ref first, then from IndexedDB
-    let handle = fileHandleRef.current
-    if (!handle) {
-      console.log(`[v0] Attempting to restore ${type} handle from IndexedDB`)
-      handle = await getFileHandle(handleKey)
-      if (handle) {
-        fileHandleRef.current = handle
-        console.log(`[v0] Restored ${type} file handle from IndexedDB successfully`)
-      } else {
-        console.log(`[v0] No ${type} handle found in IndexedDB`)
-      }
+    const result = await readTextFromHandleKey(handleKey, fileHandleRef.current)
+    if (result.ok) {
+      fileHandleRef.current = result.handle
+      setContent(result.content)
+      console.log(`[v0] Reloaded ${type} from file handle, content length:`, result.content.length)
+      return result.content
     }
-
-    // If we have a valid file handle, verify permission and use it
-    if (handle) {
-      console.log(`[v0] Have handle for ${type}, verifying permission...`)
-      try {
-        const hasPermission = await verifyFilePermission(handle)
-        console.log(`[v0] Permission result for ${type}:`, hasPermission)
-
-        if (hasPermission) {
-          const file = await handle.getFile()
-          const content = await file.text()
-          setContent(content)
-          console.log(`[v0] Reloaded ${type} from file handle with permission, content length:`, content.length)
-          return content
-        } else {
-          console.log(`[v0] Permission denied for ${type} file handle`)
-          // Just return null and let the caller handle it
-        }
-      } catch (error) {
-        console.log(`[v0] Failed to reload from file handle:`, error)
-        // File handle is no longer valid, need to re-select
-        fileHandleRef.current = null
-        await deleteFileHandle(handleKey)
-      }
-    }
+    console.log(`[v0] Failed to reload ${type} from file handle:`, result.reason)
+    fileHandleRef.current = result.handle
 
     // File handle is missing or invalid, prompt user to re-select
     console.log(`[v0] File handle missing for ${type}, prompting user to re-select`)
@@ -1166,21 +580,17 @@ export default function LLMAPITester() {
     return content
   }
 
-  const isHttpUrl = (path: string) => {
-    return path.startsWith("http://") || path.startsWith("https://")
-  }
-
   useEffect(() => {
-    if (enablePromptFile && promptFilePath && isHttpUrl(promptFilePath) && !isPromptFromLocalFile) {
-      readLocalFile(promptFilePath)
-        .then((content) => {
-          setLoadedPromptContent(content || "")
-        })
-        .catch((error) => {
-          console.error("Failed to load prompt file:", error)
-          setLoadedPromptContent("")
-        })
-    } else if (!enablePromptFile) {
+    preloadHttpTextSource({
+      enabled: enablePromptFile,
+      path: promptFilePath,
+      isFromLocalFile: isPromptFromLocalFile,
+      readHttp: readLocalFile,
+      setLoadedContent: setLoadedPromptContent,
+      onError: (error) => console.error("Failed to load prompt file:", error),
+    })
+
+    if (!enablePromptFile) {
       setLoadedPromptContent("")
       setIsPromptFromLocalFile(false)
       promptFileHandleRef.current = null
@@ -1189,21 +599,16 @@ export default function LLMAPITester() {
   }, [enablePromptFile, promptFilePath, isPromptFromLocalFile])
 
   useEffect(() => {
-    if (
-      enableSystemPromptFile &&
-      systemPromptFilePath &&
-      isHttpUrl(systemPromptFilePath) &&
-      !isSystemPromptFromLocalFile
-    ) {
-      readLocalFile(systemPromptFilePath)
-        .then((content) => {
-          setLoadedSystemPromptContent(content || "")
-        })
-        .catch((error) => {
-          console.error("Failed to load system prompt file:", error)
-          setLoadedSystemPromptContent("")
-        })
-    } else if (!enableSystemPromptFile) {
+    preloadHttpTextSource({
+      enabled: enableSystemPromptFile,
+      path: systemPromptFilePath,
+      isFromLocalFile: isSystemPromptFromLocalFile,
+      readHttp: readLocalFile,
+      setLoadedContent: setLoadedSystemPromptContent,
+      onError: (error) => console.error("Failed to load system prompt file:", error),
+    })
+
+    if (!enableSystemPromptFile) {
       setLoadedSystemPromptContent("")
       setIsSystemPromptFromLocalFile(false)
       systemPromptFileHandleRef.current = null
@@ -1216,76 +621,10 @@ export default function LLMAPITester() {
 
     console.log("[v0] Reloading images and clearing cache...")
 
-    const reloadedImages: MessageImage[] = []
-
-    for (const img of messageImages) {
-      if (img.type === "url" && img.url) {
-        try {
-          // Add cache-busting parameter to force reload
-          const urlWithCacheBust = img.url.includes("?") ? `${img.url}&_t=${Date.now()}` : `${img.url}?_t=${Date.now()}`
-
-          const response = await fetch(urlWithCacheBust, {
-            cache: "no-store", // Force no caching
-          })
-
-          if (!response.ok) {
-            console.error(`[v0] Failed to reload image from ${img.url}:`, response.statusText)
-            // Keep the old image if reload fails
-            reloadedImages.push(img)
-            continue
-          }
-
-          const blob = await response.blob()
-
-          // Convert blob to base64
-          const base64 = await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader()
-            reader.onload = (event) => resolve(event.target?.result as string)
-            reader.onerror = reject
-            reader.readAsDataURL(blob)
-          })
-
-          // Create updated image with new base64 data
-          reloadedImages.push({
-            ...img,
-            base64: base64,
-            mimeType: blob.type,
-          })
-
-          console.log(`[v0] Reloaded image from ${img.url}`)
-        } catch (error) {
-          console.error(`[v0] Error reloading image from ${img.url}:`, error)
-          // Keep the old image if reload fails
-          reloadedImages.push(img)
-        }
-      } else {
-        // For file uploads, keep as-is (no URL to reload from)
-        reloadedImages.push(img)
-      }
-    }
-
+    const reloadedImages = await reloadMessageImages(messageImages)
     setMessageImages(reloadedImages)
     console.log("[v0] Image reload complete")
     return reloadedImages
-  }
-
-  const formatResponseForDisplay = (response: Response, responseText: string) => {
-    let parsedResponse: any
-    try {
-      parsedResponse = JSON.parse(responseText)
-    } catch {
-      parsedResponse = responseText
-    }
-    return JSON.stringify(
-      {
-        status: response.status,
-        statusText: response.statusText,
-        headers: Object.fromEntries(response.headers.entries()),
-        body: parsedResponse,
-      },
-      null,
-      2,
-    )
   }
 
   const runProbeTest = async () => {
@@ -1307,39 +646,22 @@ export default function LLMAPITester() {
       const startTime = performance.now()
 
       // 检查是否是 ModelScope 的图片生成模型
-      const isModelScopeImageGeneration = provider === "modelscope" && selectedModelInfoForPath && (() => {
-        const modelScopeInfo = selectedModelInfoForPath as ModelScopeModel
-        const taskTypes = modelScopeInfo.task_types
-        return Array.isArray(taskTypes)
-          ? taskTypes.includes("生成图片")
-          : typeof taskTypes === "string" && taskTypes.includes("生成图片")
-      })()
+      const isModelScopeImageGeneration =
+        provider === "modelscope" &&
+        !!selectedModelInfoForPath &&
+        modelscopeHasImageGenerationTask(selectedModelInfoForPath as ModelScopeModel)
 
-      const requestBody: any = {
-        model: model,
-        max_tokens: 100, // Small token count for probe
-        temperature: 1,
-        top_p: 1,
-        frequency_penalty: 0,
-        presence_penalty: 0,
-      }
+      const { requestBody, requestCurl } = buildProbeRequest({
+        provider,
+        baseURL,
+        apiKey,
+        fullApiPath,
+        model,
+        systemPrompt,
+        isModelScopeImageGeneration,
+      })
 
-      // ModelScope 图片生成模型使用 prompt 而不是 messages
-      if (isModelScopeImageGeneration) {
-        requestBody.prompt = "hello"
-      } else {
-        requestBody.messages = [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: "hello" },
-        ]
-      }
-
-      const probeCurl = `curl ${fullApiPath} \\
-  -X POST \\
-  -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer ${apiKey}" \\
-  -d '${JSON.stringify(requestBody, null, 2).replace(/\n/g, "\n  ")}'`
-      setRequestData(probeCurl)
+      setRequestData(requestCurl)
 
       const response = await fetch(fullApiPath, {
         method: "POST",
@@ -1560,18 +882,8 @@ export default function LLMAPITester() {
   const fetchCerebrasModels = async () => {
     setIsLoadingModels(true)
     try {
-      // 从提供的 URL 获取模型信息
-      const response = await fetch("https://models.xiechengqi.top/cerebras.json")
-      if (response.ok) {
-        const responseData = await response.json()
-        console.log("[v0] Fetched Cerebras models:", responseData)
-        // 根据结构，数据可能在 models 字段中
-        const models = Array.isArray(responseData) ? responseData : responseData.models || responseData.data || []
-        setCerebrasModels(models)
-      } else {
-        console.error("[v0] Failed to fetch Cerebras models:", response.statusText)
-        setCerebrasModels([])
-      }
+      const models = await fetchCerebrasModelCatalog()
+      setCerebrasModels(models)
     } catch (error) {
       console.error("[v0] Error fetching Cerebras models:", error)
       setCerebrasModels([])
@@ -1583,18 +895,8 @@ export default function LLMAPITester() {
   const fetchModelScopeModels = async () => {
     setIsLoadingModels(true)
     try {
-      // 从提供的 URL 获取模型信息
-      const response = await fetch("https://models.xiechengqi.top/modelscope.json")
-      if (response.ok) {
-        const responseData = await response.json()
-        console.log("[v0] Fetched ModelScope models:", responseData)
-        // 根据结构，数据可能在 models 字段中
-        const models = Array.isArray(responseData) ? responseData : responseData.models || responseData.data || []
-        setModelscopeModels(models)
-      } else {
-        console.error("[v0] Failed to fetch ModelScope models:", response.statusText)
-        setModelscopeModels([])
-      }
+      const models = await fetchModelScopeModelCatalog()
+      setModelscopeModels(models)
     } catch (error) {
       console.error("[v0] Error fetching ModelScope models:", error)
       setModelscopeModels([])
@@ -1606,18 +908,8 @@ export default function LLMAPITester() {
   const fetchOpenRouterModels = async () => {
     setIsLoadingModels(true)
     try {
-      // 从提供的 URL 获取模型信息
-      const response = await fetch("https://models.xiechengqi.top/openrouter.json")
-      if (response.ok) {
-        const responseData = await response.json()
-        console.log("[v0] Fetched OpenRouter models:", responseData)
-        // 根据 demos/openrouter.json 结构，数据在 models 字段中
-        const models = Array.isArray(responseData) ? responseData : responseData.models || responseData.data || []
-        setOpenrouterModels(models)
-      } else {
-        console.error("[v0] Failed to fetch OpenRouter models:", response.statusText)
-        setOpenrouterModels([])
-      }
+      const models = await fetchOpenRouterModelCatalog()
+      setOpenrouterModels(models)
     } catch (error) {
       console.error("[v0] Error fetching OpenRouter models:", error)
       setOpenrouterModels([])
@@ -1694,175 +986,58 @@ export default function LLMAPITester() {
     console.log("[v0] promptFilePath:", promptFilePath)
 
     // Handle external system prompt loading
-    let finalSystemPrompt = systemPrompt
-
-    if (enableSystemPromptFile && systemPromptFilePath.trim()) {
-      console.log("[v0] System prompt external loading enabled")
-
-      if (autoReloadSystemPrompt) {
-        console.log("[v0] Auto reload system prompt is ON")
-        // Always reload when auto-reload is enabled
-        const isHttpUrl =
-          systemPromptFilePath.trim().startsWith("http://") || systemPromptFilePath.trim().startsWith("https://")
-
-        if (isHttpUrl) {
-          console.log("[v0] Reloading system prompt from HTTP URL")
-          const reloadedContent = await readLocalFile(systemPromptFilePath.trim())
-          if (reloadedContent !== null) {
-            // Check for null explicitly
-            setLoadedSystemPromptContent(reloadedContent)
-            finalSystemPrompt = reloadedContent
-            console.log("[v0] Reloaded system prompt from URL, length:", reloadedContent.length)
-          } else {
-            // If reload failed, use existing loaded content or default
-            finalSystemPrompt = loadedSystemPromptContent || systemPrompt
-          }
-        } else if (isSystemPromptFromLocalFile) {
-          console.log("[v0] Reloading system prompt from local file")
-          const reloadedContent = await reloadLocalFile("systemPrompt")
-          if (reloadedContent !== null) {
-            // Check for null explicitly
-            finalSystemPrompt = reloadedContent
-            console.log("[v0] Reloaded system prompt from local file, length:", reloadedContent.length)
-          } else {
-            // User cancelled file selection, use existing content
-            finalSystemPrompt = loadedSystemPromptContent || systemPrompt
-          }
-        } else {
-          finalSystemPrompt = loadedSystemPromptContent || systemPrompt
-        }
-      } else {
-        // Auto-reload is OFF, use cached content
-        console.log("[v0] Using cached system prompt content")
-        finalSystemPrompt = loadedSystemPromptContent || systemPrompt
-      }
-    }
+    const finalSystemPrompt = await resolveTextSource({
+      enabled: enableSystemPromptFile,
+      path: systemPromptFilePath,
+      autoReload: autoReloadSystemPrompt,
+      isFromLocalFile: isSystemPromptFromLocalFile,
+      loadedContent: loadedSystemPromptContent,
+      fallbackContent: systemPrompt,
+      readHttp: readLocalFile,
+      reloadLocal: () => reloadLocalFile("systemPrompt"),
+      setLoadedContent: setLoadedSystemPromptContent,
+    })
 
     console.log("[v0] Final system prompt length:", finalSystemPrompt.length)
 
     // Handle external user message loading
-    let finalUserMessage = userMessage
-
-    console.log("[v0] enablePromptFile:", enablePromptFile)
-    console.log("[v0] autoReloadPrompt:", autoReloadPrompt)
-    console.log("[v0] isPromptFromLocalFile:", isPromptFromLocalFile)
-    console.log("[v0] promptFileHandleRef.current:", promptFileHandleRef.current)
-    console.log("[v0] promptFilePath:", promptFilePath)
-
-    if (enablePromptFile && promptFilePath.trim()) {
-      console.log("[v0] User message external loading enabled")
-
-      if (autoReloadPrompt) {
-        console.log("[v0] Auto reload prompt is ON")
-        // Always reload when auto-reload is enabled
-        const isHttpUrl = promptFilePath.trim().startsWith("http://") || promptFilePath.trim().startsWith("https://")
-
-        if (isHttpUrl) {
-          console.log("[v0] Reloading user message from HTTP URL")
-          const reloadedContent = await readLocalFile(promptFilePath.trim())
-          if (reloadedContent !== null) {
-            // Check for null explicitly
-            setLoadedPromptContent(reloadedContent)
-            finalUserMessage = reloadedContent
-            console.log("[v0] Reloaded user message from URL, length:", reloadedContent.length)
-          } else {
-            // If reload failed, use existing loaded content or default
-            finalUserMessage = loadedPromptContent || userMessage
-          }
-        } else if (isPromptFromLocalFile) {
-          console.log("[v0] Reloading user message from local file")
-          const reloadedContent = await reloadLocalFile("prompt")
-          if (reloadedContent !== null) {
-            // Check for null explicitly
-            finalUserMessage = reloadedContent
-            console.log("[v0] Reloaded user message from local file, length:", reloadedContent.length)
-          } else {
-            // User cancelled file selection, use existing content
-            finalUserMessage = loadedPromptContent || userMessage
-          }
-        } else {
-          finalUserMessage = loadedPromptContent || userMessage
-        }
-      } else {
-        // Auto-reload is OFF, use cached content
-        console.log("[v0] Using cached user message content")
-        finalUserMessage = loadedPromptContent || userMessage
-      }
-    }
+    const finalUserMessage = await resolveTextSource({
+      enabled: enablePromptFile,
+      path: promptFilePath,
+      autoReload: autoReloadPrompt,
+      isFromLocalFile: isPromptFromLocalFile,
+      loadedContent: loadedPromptContent,
+      fallbackContent: userMessage,
+      readHttp: readLocalFile,
+      reloadLocal: () => reloadLocalFile("prompt"),
+      setLoadedContent: setLoadedPromptContent,
+    })
 
     console.log("[v0] Final user message length:", finalUserMessage.length)
 
-    let userMessageContent: any = finalUserMessage
-
-    // CHANGE: Use currentImages instead of messageImages to ensure we use the reloaded images
-    if (currentImages.length > 0) {
-      // If there are images, use the multi-modal format
-      const contentParts: any[] = [
-        {
-          type: "text",
-          text: finalUserMessage,
-        },
-      ]
-
-      currentImages.forEach((img) => {
-        if (img.base64) {
-          // Use base64 data for all images (both URL and file types)
-          contentParts.push({
-            type: "image_url",
-            image_url: {
-              url: img.base64,
-            },
-          })
-        }
-      })
-
-      userMessageContent = contentParts
-    }
-
-    const messages: any[] = [
-      { role: "user", content: userMessageContent },
-      { role: "system", content: finalSystemPrompt },
-    ]
-
     // 检查是否是 ModelScope 的图片生成模型
-    const isModelScopeImageGeneration = provider === "modelscope" && selectedModelInfoForPath && (() => {
-      const modelScopeInfo = selectedModelInfoForPath as ModelScopeModel
-      const taskTypes = modelScopeInfo.task_types
-      return Array.isArray(taskTypes)
-        ? taskTypes.includes("生成图片")
-        : typeof taskTypes === "string" && taskTypes.includes("生成图片")
-    })()
+    const isModelScopeImageGeneration =
+      provider === "modelscope" &&
+      !!selectedModelInfoForPath &&
+      modelscopeHasImageGenerationTask(selectedModelInfoForPath as ModelScopeModel)
 
-    const requestBody: any = {
+    const { messages, requestBody, requestCurl, requestContent } = buildLlmRequest({
+      provider,
+      baseURL,
+      apiKey,
+      fullApiPath,
       model: modelToUse,
-      max_tokens: maxTokens,
+      maxTokens,
       temperature,
-      top_p: topP,
-      frequency_penalty: frequencyPenalty,
-      presence_penalty: presencePenalty,
-      stream: stream, // Include stream parameter
-    }
-
-    // ModelScope 图片生成模型使用 prompt 而不是 messages
-    if (isModelScopeImageGeneration) {
-      requestBody.prompt = finalUserMessage
-    } else {
-      requestBody.messages = messages
-    }
-
-    // Generate cURL command, handling potential undefined values for headers
-    const curlHeaders = ["Content-Type: application/json", `Authorization: Bearer ${apiKey}`]
-    if (baseURL && provider === "custom") {
-      // Example for custom header, adjust as needed for other providers if they require different headers
-      // For OpenAI, Anthropic, etc., Authorization is usually enough.
-      // For some custom setups, an additional API key might be needed.
-      // curlHeaders.push(`X-Custom-Auth: ${apiKey}`)
-    }
-
-    const requestCurl = `curl ${fullApiPath} \\
-  -X POST \\
-  ${curlHeaders.map((h) => `-H "${h}" \\`).join("")}
-  -d '${JSON.stringify(requestBody, null, 2).replace(/\n/g, "\n  ")}'`
+      topP,
+      frequencyPenalty,
+      presencePenalty,
+      stream,
+      finalSystemPrompt,
+      finalUserMessage,
+      currentImages,
+      isModelScopeImageGeneration,
+    })
 
     setRequestData(requestCurl)
 
@@ -1910,71 +1085,7 @@ export default function LLMAPITester() {
       )
       setResponseData(formattedResponse)
 
-      const requestContent = JSON.stringify(messages) // Store the actual messages array
-
-      let responseContent = ""
-      let responseImagesToSave: MessageImage[] = []
-      
-      // Check for ModelScope image generation format: images[0].url
-      // parsedResponse 是 API 直接返回的内容，所以检查 parsedResponse.images
-      const modelScopeImages = parsedResponse?.images
-      if (modelScopeImages && Array.isArray(modelScopeImages) && modelScopeImages.length > 0) {
-        // ModelScope 图片生成响应：直接使用图片 URL（避免 CORS 问题）
-        const imageUrls = modelScopeImages
-          .map((img: any) => img.url)
-          .filter((url: any) => url && (url.startsWith("http://") || url.startsWith("https://")))
-        
-        if (imageUrls.length > 0) {
-          // 直接使用图片 URL，不进行下载转换（避免 CORS 错误）
-          const timestamp = Date.now()
-          responseImagesToSave = imageUrls.map((url, idx) => ({
-            id: `response-${timestamp}-${idx}`,
-            type: "url" as const,
-            url: url,
-          }))
-          // 使用图片 URL 作为响应内容
-          responseContent = imageUrls.join("\n")
-        } else {
-          responseContent = JSON.stringify(parsedResponse)
-        }
-      } else {
-        const messageContent = parsedResponse?.choices?.[0]?.message?.content
-        const anthropicContent = parsedResponse?.content?.[0]?.text
-
-        if (messageContent || parsedResponse?.choices?.[0]?.message) {
-          // Check for reasoning_details (new format for deep thinking models like OLMo, DeepSeek R1, etc.)
-          const reasoningDetails = parsedResponse?.choices?.[0]?.message?.reasoning_details?.[0]?.text
-          const reasoningContent =
-            parsedResponse?.choices?.[0]?.message?.reasoning_content || parsedResponse?.choices?.[0]?.message?.reasoning
-
-          if (reasoningDetails) {
-            // New format: reasoning_details array with text field
-            if (messageContent) {
-              responseContent = `<Thinking>\n${reasoningDetails}\n</Thinking>\n\n${messageContent}`
-            } else {
-              // If content is empty, just use the reasoning
-              responseContent = reasoningDetails
-            }
-          } else if (reasoningContent) {
-            // Legacy format: reasoning_content or reasoning field
-            if (messageContent) {
-              responseContent = `<Thinking>\n${reasoningContent}\n</Thinking>\n\n${messageContent}`
-            } else {
-              responseContent = reasoningContent
-            }
-          } else if (messageContent) {
-            // Regular content without separate reasoning
-            responseContent = messageContent
-          } else {
-            // Fallback to full message object
-            responseContent = JSON.stringify(parsedResponse?.choices?.[0]?.message)
-          }
-        } else if (anthropicContent) {
-          responseContent = anthropicContent
-        } else {
-          responseContent = JSON.stringify(parsedResponse)
-        }
-      }
+      const { responseContent, responseImagesToSave } = parseResponseToContent(parsedResponse)
 
       const historyTimestamp = Date.now()
       const historyItem: HistoryItem = {
@@ -2009,10 +1120,6 @@ export default function LLMAPITester() {
 
       setHistory((prev) => {
         const updated = [historyItem, ...prev]
-        // Save to IndexedDB instead of localStorage
-        saveHistoryToDB(updated).catch((error) => {
-          console.error("[v0] Failed to save history to IndexedDB:", error)
-        })
         return updated
       })
 
@@ -2070,14 +1177,9 @@ export default function LLMAPITester() {
         requestRaw: "",
         responseContent: "",
         responseRaw: errorResponse,
-        duration: null, // Duration is not applicable on error
       }
       setHistory((prev) => {
         const updated = [newHistoryItem, ...prev]
-        // Save to IndexedDB instead of localStorage
-        saveHistoryToDB(updated).catch((error) => {
-          console.error("[v0] Failed to save history to IndexedDB:", error)
-        })
         return updated
       })
     } finally {
@@ -2134,156 +1236,89 @@ export default function LLMAPITester() {
     }
   }
 
-  const handleResetApiConfig = () => {
-    setProvider(DEFAULT_VALUES.provider)
-    setBaseURL(DEFAULT_VALUES.baseURL)
-    setApiPath(DEFAULT_VALUES.apiPath)
-    setApiKey("")
-    setModel("")
-    setError("")
-    setShowApiKey(false) // Reset API Key visibility
-    setProbeStatus("idle") // Reset probe status
-    setSystemPrompt(DEFAULT_VALUES.systemPrompt) // Reset systemPrompt
-    setUserMessage(DEFAULT_VALUES.userMessage) // Reset userMessage
-    setPromptFilePath(DEFAULT_VALUES.promptFilePath) // Reset promptFilePath
-    setEnablePromptFile(DEFAULT_VALUES.enablePromptFile) // Reset enablePromptFile
-    // Resetting system prompt external file settings
-    setSystemPromptFilePath(DEFAULT_VALUES.systemPromptFilePath)
-    setEnableSystemPromptFile(DEFAULT_VALUES.enableSystemPromptFile)
-    setLoadedSystemPromptContent("") // Clear loaded content
+  const handleResetParameters = () => {
+    stopTimer() // Ensure timer is stopped on reset
 
-    // Reset local file states
-    setIsPromptFromLocalFile(false)
+    dispatchSettings({
+      type: "patch",
+      patch: {
+        prompt: initialSettings.prompt,
+        maxTokens: initialSettings.maxTokens,
+        temperature: initialSettings.temperature,
+        topP: initialSettings.topP,
+        frequencyPenalty: initialSettings.frequencyPenalty,
+        presencePenalty: initialSettings.presencePenalty,
+        showRawColumns: initialSettings.showRawColumns,
+        expandRequestContent: initialSettings.expandRequestContent,
+        expandResponseContent: initialSettings.expandResponseContent,
+        timerEnabled: initialSettings.timerEnabled,
+        timerInterval: initialSettings.timerInterval,
+        autoReloadPrompt: initialSettings.autoReloadPrompt,
+        autoReloadSystemPrompt: initialSettings.autoReloadSystemPrompt,
+        autoReloadImages: initialSettings.autoReloadImages,
+        systemPrompt: initialSettings.systemPrompt,
+        userMessage: initialSettings.userMessage,
+        promptFilePath: initialSettings.promptFilePath,
+        enablePromptFile: initialSettings.enablePromptFile,
+        systemPromptFilePath: initialSettings.systemPromptFilePath,
+        enableSystemPromptFile: initialSettings.enableSystemPromptFile,
+        isPromptFromLocalFile: initialSettings.isPromptFromLocalFile,
+        isSystemPromptFromLocalFile: initialSettings.isSystemPromptFromLocalFile,
+        imageUrl: initialSettings.imageUrl,
+        showImageUrlInput: initialSettings.showImageUrlInput,
+        isAddingImageUrl: initialSettings.isAddingImageUrl,
+      },
+    })
+    dispatchRun({
+      type: "patch",
+      patch: {
+        stream: initialRunState.stream,
+        responseDuration: initialRunState.responseDuration,
+      },
+    })
+
+    setLoadedPromptContent("")
+    setLoadedSystemPromptContent("")
     promptFileHandleRef.current = null
-    setIsSystemPromptFromLocalFile(false)
     systemPromptFileHandleRef.current = null
-
-    // Delete file handles from IndexedDB on reset
     deleteFileHandle("promptFileHandle")
     deleteFileHandle("systemPromptFileHandle")
 
-    // Reset modality filters and search query
-    setSelectedInputModalities([]) // Reset to empty array
-    setSelectedOutputModalities([]) // Reset to empty array
-    setModelSearchQuery("")
-
-    // Reset available modalities
-    setAvailableInputModalities([])
-    setAvailableOutputModalities([])
-
-    // Reset image-related state
     setMessageImages([])
-    setImageUrl("")
-    setShowImageUrlInput(false)
-    setIsAddingImageUrl(false) // Reset loading state
-    setAutoReloadImages(DEFAULT_VALUES.autoReloadImages) // Reset autoReloadImages
+    setZoomedImage(null)
+
+    localStorage.removeItem(SETTINGS_STORAGE_KEY)
+  }
+
+  const handleReset = () => {
+    stopTimer() // Ensure timer is stopped on reset
+
+    dispatchSettings({ type: "patch", patch: initialSettings })
+    dispatchRun({ type: "patch", patch: initialRunState })
+
+    setShowApiKey(false)
+    setIsCustomModel(false)
+    setTranslatedDescription("")
+    setIsTranslating(false)
+    setTranslationError("")
+
+    setLoadedPromptContent("")
+    setLoadedSystemPromptContent("")
+    promptFileHandleRef.current = null
+    systemPromptFileHandleRef.current = null
+    deleteFileHandle("promptFileHandle")
+    deleteFileHandle("systemPromptFileHandle")
+
+    setMessageImages([])
+    setZoomedImage(null)
+
     setCustomProviderName("")
     setCustomProviderError("")
     setCustomProviderSaved(false)
     setCustomProviderStatusMessage("")
     setIsEditingCustomProvider(false)
 
-    // Remove specific items from localStorage
-    localStorage.removeItem("llm-api-test-settings") // Clear all settings and reload defaults
-  }
-
-  const handleResetParameters = () => {
-    setPrompt(DEFAULT_VALUES.prompt) // This seems to reset the old prompt state, consider if userMessage is preferred
-    setMaxTokens(DEFAULT_VALUES.maxTokens)
-    setTemperature(DEFAULT_VALUES.temperature)
-    setTopP(DEFAULT_VALUES.topP)
-    setFrequencyPenalty(DEFAULT_VALUES.frequencyPenalty)
-    setPresencePenalty(DEFAULT_VALUES.presencePenalty)
-    setStream(false) // Reset stream
-    // Reset timer settings and stop timer if running
-    setTimerEnabled(DEFAULT_VALUES.timerEnabled)
-    setTimerInterval(DEFAULT_VALUES.timerInterval)
-    stopTimer() // Ensure timer is stopped on reset
-    setShowRawColumns(DEFAULT_VALUES.showRawColumns) // Reset showRawColumns
-    // Reset separate expand states
-    setExpandRequestContent(DEFAULT_VALUES.expandRequestContent)
-    setExpandResponseContent(DEFAULT_VALUES.expandResponseContent)
-    setSystemPrompt(DEFAULT_VALUES.systemPrompt) // Reset system prompt
-    setUserMessage(DEFAULT_VALUES.userMessage) // Reset user message
-    setPromptFilePath(DEFAULT_VALUES.promptFilePath) // Reset promptFilePath
-    setEnablePromptFile(DEFAULT_VALUES.enablePromptFile) // Reset enablePromptFile
-
-    // Reset auto reload settings
-    setAutoReloadPrompt(DEFAULT_VALUES.autoReloadPrompt)
-    setAutoReloadSystemPrompt(DEFAULT_VALUES.autoReloadSystemPrompt)
-    setAutoReloadImages(DEFAULT_VALUES.autoReloadImages) // Reset autoReloadImages
-
-    setMessageImages([])
-    setImageUrl("")
-    setShowImageUrlInput(false)
-    setIsAddingImageUrl(false)
-
-    // Remove specific items from localStorage
-    localStorage.removeItem("llm-api-test-settings") // Clear all settings and reload defaults
-  }
-
-  const handleReset = () => {
-    handleResetApiConfig()
-    handleResetParameters()
-  }
-
-  const handleDeleteAllHistory = () => {
-    clearAllData()
-      .then(() => {
-        setHistory([])
-        toast({
-          title: "历史记录已清空",
-          description: "所有历史测试数据已被删除",
-        })
-      })
-      .catch((error) => {
-        console.error("[v0] Failed to clear all data:", error)
-        toast({
-          variant: "destructive",
-          title: "错误",
-          description: "清空历史记录失败",
-        })
-      })
-  }
-
-  const handleDeleteHistoryItem = (id: string) => {
-    const itemToDelete = history.find((item) => item.id === id)
-    const updated = history.filter((item) => item.id !== id)
-    setHistory(updated)
-    
-    // 删除对应的响应图片
-    if (itemToDelete) {
-      deleteResponseImagesFromDB(itemToDelete.timestamp).catch((error) => {
-        console.error("[v0] Failed to delete response images:", error)
-      })
-      // 从状态中移除
-      setResponseImagesMap((prev) => {
-        const newMap = new Map(prev)
-        newMap.delete(itemToDelete.timestamp)
-        return newMap
-      })
-    }
-    
-    saveHistoryToDB(updated).catch((error) => {
-      console.error("[v0] Failed to update history in IndexedDB:", error)
-    })
-    toast({
-      title: "记录已删除",
-      description: "历史记录项已被删除",
-    })
-  }
-
-  const handleClearHistory = () => {
-    setHistory([])
-    setResponseImagesMap(new Map()) // 清空响应图片映射
-    clearAllData().catch((error) => {
-      console.error("[v0] Failed to clear IndexedDB:", error)
-    })
-    setCurrentPage(1) // Reset to first page after clearing
-    toast({
-      title: "历史记录已清空",
-      description: "所有历史测试数据已被删除",
-    })
+    localStorage.removeItem(SETTINGS_STORAGE_KEY)
   }
 
   const deleteModelHistoryItem = (id: string) => {
@@ -2321,18 +1356,18 @@ export default function LLMAPITester() {
     try {
       const startTime = performance.now()
 
-      const requestBody = {
+      const isModelScopeImageGeneration =
+        item.provider === "modelscope" && (item.apiPath.includes("/images/") || item.apiPath.includes("images/generations"))
+
+      const { requestBody } = buildProbeRequest({
+        provider: item.provider,
+        baseURL: item.baseURL,
+        apiKey: item.apiKey,
+        fullApiPath: fullPath,
         model: item.model,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: "hello" },
-        ],
-        max_tokens: 100,
-        temperature: 1,
-        top_p: 1,
-        frequency_penalty: 0,
-        presence_penalty: 0,
-      }
+        systemPrompt,
+        isModelScopeImageGeneration,
+      })
 
       const response = await fetch(fullPath, {
         method: "POST",
@@ -2399,64 +1434,12 @@ export default function LLMAPITester() {
   const exportHistoryToCSV = () => {
     if (history.length === 0) return
 
-    // Define CSV headers based on showRawColumns state
-    const headers = showRawColumns
-      ? ["时间", "模型", "用时(ms)", "请求 Content", "请求 Raw", "响应 Content", "响应 Raw"]
-      : ["时间", "模型", "用时(ms)", "请求 Content", "响应 Content"]
-
-    // Convert history data to CSV rows
-    const rows = history.map((item) => {
-      const timestamp = new Date(item.timestamp).toLocaleString("zh-CN", {
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      })
-      const duration = item.duration !== undefined && item.duration !== null ? item.duration : "-"
-
-      // Escape double quotes and wrap fields in quotes
-      const escapeCSV = (text: string) => {
-        if (text === null || text === undefined) return '""'
-        return `"${String(text).replace(/"/g, '""')}"`
-      }
-
-      // Build row based on showRawColumns state
-      const rowData = showRawColumns
-        ? [
-            escapeCSV(timestamp),
-            escapeCSV(item.model),
-            escapeCSV(String(duration)),
-            escapeCSV(item.requestContent),
-            escapeCSV(item.requestRaw),
-            escapeCSV(item.responseContent),
-            escapeCSV(item.responseRaw),
-          ]
-        : [
-            escapeCSV(timestamp),
-            escapeCSV(item.model),
-            escapeCSV(String(duration)),
-            escapeCSV(item.requestContent),
-            escapeCSV(item.responseContent),
-          ]
-
-      return rowData.join(",")
+    const csv = buildHistoryCsv({ history, showRawColumns })
+    downloadTextFile({
+      text: "\uFEFF" + csv,
+      filename: `llm_api_history_${Date.now()}.csv`,
+      mimeType: "text/csv;charset=utf-8;",
     })
-
-    // Combine headers and rows
-    const csv = [headers.join(","), ...rows].join("\n")
-
-    // Create blob and download
-    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" })
-    const link = document.createElement("a")
-    const url = URL.createObjectURL(blob)
-    link.setAttribute("href", url)
-    link.setAttribute("download", `llm_api_history_${Date.now()}.csv`)
-    link.style.visibility = "hidden"
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
   }
 
   const toggleCellExpansion = (cellId: string) => {
@@ -2483,8 +1466,8 @@ export default function LLMAPITester() {
     })
   }
 
-  const totalPages = Math.ceil(history.length / pageSize)
-  const paginatedHistory = history.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+  const totalPages = getTotalPages(history.length, pageSize)
+  const paginatedHistory = slicePage(history, currentPage, pageSize)
 
   const [requestCopyText, setRequestCopyText] = useState("复制")
   const [responseCopyText, setResponseCopyText] = useState("复制")
@@ -2492,131 +1475,20 @@ export default function LLMAPITester() {
   const handleCopy = async (text: string, type: "request" | "response") => {
     const setText = type === "request" ? setRequestCopyText : setResponseCopyText
 
-    try {
-      // Try modern Clipboard API first
-      await navigator.clipboard.writeText(text)
+    const ok = await copyTextToClipboard(text)
+    if (ok) {
       setText("已复制!")
       setTimeout(() => setText("复制"), 2000)
-    } catch (err) {
-      // Fallback to traditional method
-      const textArea = document.createElement("textarea")
-      textArea.value = text
-      textArea.style.position = "fixed"
-      textArea.style.left = "-999999px"
-      document.body.appendChild(textArea)
-      textArea.select()
-
-      try {
-        document.execCommand("copy")
-        setText("已复制!")
-        setTimeout(() => setText("复制"), 2000)
-      } catch (execErr) {
-        toast({
-          title: "复制失败",
-          description: "无法访问剪贴板，请手动复制",
-          variant: "destructive",
-        })
-      }
-
-      document.body.removeChild(textArea)
-    }
-  }
-
-  const renderContentWithCodeBlocks = (content: string, cellId: string, isExpanded: boolean, images?: string[]) => {
-    let processedContent = content
-    let isJson = false
-
-    try {
-      // Check if content looks like JSON (starts with { or [)
-      const trimmed = content.trim()
-      if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
-        // Try to verify it's valid JSON
-        JSON.parse(trimmed)
-        // If successfully parsed, wrap original content in json code block without formatting
-        processedContent = "```json\n" + trimmed + "\n```"
-        isJson = true
-      }
-    } catch (e) {
-      // Not valid JSON, use original content
+      return
     }
 
-    const parts = processedContent.split(/(```[\s\S]*?```)/g)
-
-    return (
-      <>
-        {images && images.length > 0 && (
-          <div className="flex flex-wrap gap-2 mb-2">
-            {images.map((imgUrl, idx) => (
-              <div key={idx} className="relative group rounded border overflow-hidden bg-muted">
-                <img
-                  src={imgUrl || "/placeholder.svg"}
-                  alt={`Generated image ${idx + 1}`}
-                  className="size-20 object-cover cursor-pointer hover:opacity-80 transition-opacity"
-                  onClick={() =>
-                    setZoomedImage({
-                      id: `response-${cellId}-${idx}`,
-                      type: "url",
-                      base64: imgUrl,
-                    })
-                  }
-                  title="点击查看大图"
-                />
-                <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    onClick={() =>
-                      setZoomedImage({
-                        id: `response-${cellId}-${idx}`,
-                        type: "url",
-                        base64: imgUrl,
-                      })
-                    }
-                    title="放大查看"
-                  >
-                    <ZoomIn className="h-3 w-3" />
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-        {parts.map((part, index) => {
-          if (part.startsWith("```") && part.endsWith("```")) {
-            const lines = part.split("\n")
-            const language = lines[0].replace("```", "").trim()
-            const codeLines = lines.slice(1, -1)
-            const code = codeLines.join("\n")
-            const lineCount = codeLines.length
-
-            return (
-              <div key={index} className="my-2 rounded-md bg-muted overflow-hidden border relative">
-                {language && (
-                  <div className="px-3 py-1 text-xs text-muted-foreground bg-muted/50 border-b">{language}</div>
-                )}
-                <pre
-                  className={`p-3 overflow-x-auto text-xs ${
-                    !isExpanded && lineCount > 3 ? "max-h-24 overflow-y-hidden" : ""
-                  }`}
-                >
-                  <code className="block">{code}</code>
-                </pre>
-                {!isExpanded && lineCount > 3 && (
-                  <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-muted to-transparent pointer-events-none" />
-                )}
-              </div>
-            )
-          }
-          return (
-            <span key={index} className={`${!isExpanded && part.trim().length > 100 ? "line-clamp-2" : ""}`}>
-              {part}
-            </span>
-          )
-        })}
-      </>
-    )
+    toast({
+      title: "复制失败",
+      description: "无法访问剪贴板，请手动复制",
+      variant: "destructive",
+    })
   }
+
   // </CHANGE>
 
   const expandAllHistory = false // Placeholder to resolve lint error, can be replaced with actual state if needed.
@@ -2648,24 +1520,15 @@ export default function LLMAPITester() {
 
   // 自动保存 modelHistory 到 localStorage
   useEffect(() => {
-    if (modelHistory.length > 0) {
-      try {
-        localStorage.setItem("modelHistory", JSON.stringify(modelHistory))
-      } catch (error) {
-        console.error("[v0] Failed to save model history to localStorage:", error)
-      }
-    }
+    if (typeof window === "undefined") return
+    if (modelHistory.length === 0) return
+    saveModelHistoryToStorage(localStorage, modelHistory)
   }, [modelHistory])
 
   const clearModelHistory = () => {
     setModelHistory([])
     setModelHistoryPage(1)
-    // 清空 localStorage
-    try {
-      localStorage.removeItem("modelHistory")
-    } catch (error) {
-      console.error("[v0] Failed to clear model history from localStorage:", error)
-    }
+    clearModelHistoryFromStorage(localStorage)
     toast({
       title: "历史记录已清空",
       duration: 2000,
@@ -2683,23 +1546,12 @@ export default function LLMAPITester() {
       return
     }
 
-    const headers = ["时间", "提供商", "模型名", "API Key", "状态", "响应延迟(ms)"]
-    const rows = modelHistory.map((item) => [
-      new Date(item.timestamp).toLocaleString("zh-CN"),
-      item.provider,
-      item.model,
-      item.apiKey.substring(0, 10) + "...",
-      item.status === "success" ? "成功" : item.status === "error" ? "失败" : "未测试",
-      item.duration ? item.duration.toString() : "N/A",
-    ])
-
-    const csvContent = [headers.join(","), ...rows.map((row) => row.map((cell) => `"${cell}"`).join(","))].join("\n")
-
-    const blob = new Blob(["\ufeff" + csvContent], { type: "text/csv;charset=utf-8;" })
-    const link = document.createElement("a")
-    link.href = URL.createObjectURL(blob)
-    link.download = `model-history-${Date.now()}.csv`
-    link.click()
+    const csv = buildModelHistoryCsv(modelHistory)
+    downloadTextFile({
+      text: "\ufeff" + csv,
+      filename: `model-history-${Date.now()}.csv`,
+      mimeType: "text/csv;charset=utf-8;",
+    })
 
     toast({
       title: "导出成功",
@@ -2709,11 +1561,8 @@ export default function LLMAPITester() {
     })
   }
 
-  const modelHistoryTotalPages = Math.ceil(modelHistory.length / modelHistoryPageSize)
-  const paginatedModelHistory = modelHistory.slice(
-    (modelHistoryPage - 1) * modelHistoryPageSize,
-    modelHistoryPage * modelHistoryPageSize,
-  )
+  const modelHistoryTotalPages = getTotalPages(modelHistory.length, modelHistoryPageSize)
+  const paginatedModelHistory = slicePage(modelHistory, modelHistoryPage, modelHistoryPageSize)
 
   const filteredOpenRouterModels = useMemo(() => {
     let filtered = openrouterModels
@@ -2780,93 +1629,6 @@ export default function LLMAPITester() {
     return model || ""
   }, [provider, model, selectedModelInfo])
 
-  // 备用翻译 API 1: LibreTranslate (免费开源翻译服务)
-  const translateWithLibreTranslate = async (text: string): Promise<string | null> => {
-    try {
-      // 使用公共 LibreTranslate 实例
-      const response = await fetch("https://libretranslate.de/translate", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          q: text,
-          source: "en",
-          target: "zh",
-          format: "text",
-        }),
-      })
-      
-      if (response.ok) {
-        const data = await response.json()
-        if (data.translatedText) {
-          console.log("[v0] LibreTranslate 翻译成功")
-          return data.translatedText
-        }
-      }
-    } catch (error) {
-      console.warn("[v0] LibreTranslate 翻译失败:", error)
-    }
-    return null
-  }
-
-  // 备用翻译 API 2: Google Translate 免费接口（通过代理）
-  const translateWithGoogleTranslate = async (text: string): Promise<string | null> => {
-    try {
-      // 使用 Google Translate 的免费接口（通过第三方代理）
-      const response = await fetch(
-        `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-CN&dt=t&q=${encodeURIComponent(text)}`
-      )
-      
-      if (response.ok) {
-        const data = await response.json()
-        if (data && data[0] && Array.isArray(data[0])) {
-          const translated = data[0].map((item: any[]) => item[0]).join("")
-          if (translated) {
-            console.log("[v0] Google Translate 翻译成功")
-            return translated
-          }
-        }
-      }
-    } catch (error) {
-      console.warn("[v0] Google Translate 翻译失败:", error)
-    }
-    return null
-  }
-
-  // 主翻译 API: MyMemory Translation API
-  const translateWithMyMemory = async (text: string): Promise<string | null> => {
-    try {
-      const response = await fetch(
-        `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|zh-CN`
-      )
-      
-      if (response.ok) {
-        const data = await response.json()
-        console.log("[v0] MyMemory API 响应:", data)
-        
-        // 检查是否是配额用尽的警告
-        if (data.responseStatus === 429 || 
-            (data.responseData?.translatedText && 
-             data.responseData.translatedText.includes("MYMEMORY WARNING"))) {
-          console.warn("[v0] MyMemory API 配额已用尽")
-          return null // 返回 null 触发备用机制
-        }
-        
-        if (data.responseData && data.responseData.translatedText) {
-          console.log("[v0] MyMemory 翻译成功")
-          return data.responseData.translatedText
-        }
-      } else if (response.status === 429) {
-        console.warn("[v0] MyMemory API 配额已用尽 (HTTP 429)")
-        return null
-      }
-    } catch (error) {
-      console.warn("[v0] MyMemory API 翻译失败:", error)
-    }
-    return null
-  }
-
   // 翻译 description 为中文（带备用机制）
   const translateDescription = useCallback(async (text: string) => {
     if (!text) {
@@ -2879,90 +1641,11 @@ export default function LLMAPITester() {
     setTranslatedDescription("") // 清空之前的翻译结果
     setTranslationError("") // 清空之前的错误信息
     try {
-      // MyMemory Translation API 有 500 字符限制，需要分段翻译长文本
-      const MAX_LENGTH = 500
-      
-      if (text.length <= MAX_LENGTH) {
-        // 文本长度在限制内，直接翻译
-        // 按优先级尝试多个翻译 API
-        let translated: string | null = null
-        
-        // 1. 尝试 MyMemory API
-        translated = await translateWithMyMemory(text)
-        
-        // 2. 如果 MyMemory 失败，尝试 LibreTranslate
-        if (!translated) {
-          console.log("[v0] 切换到备用翻译 API: LibreTranslate")
-          translated = await translateWithLibreTranslate(text)
-        }
-        
-        // 3. 如果 LibreTranslate 也失败，尝试 Google Translate
-        if (!translated) {
-          console.log("[v0] 切换到备用翻译 API: Google Translate")
-          translated = await translateWithGoogleTranslate(text)
-        }
-        
-        if (translated) {
-          console.log("[v0] 翻译成功:", translated.substring(0, 100))
-          setTranslatedDescription(translated)
-        } else {
-          console.warn("[v0] 所有翻译 API 都失败了")
-          setTranslatedDescription("")
-          setTranslationError("翻译失败：所有翻译服务暂时不可用，请稍后重试")
-        }
-      } else {
-        // 文本超过限制，分段翻译
-        const segments: string[] = []
-        for (let i = 0; i < text.length; i += MAX_LENGTH) {
-          const segment = text.substring(i, i + MAX_LENGTH)
-          segments.push(segment)
-        }
-        
-        // 长文本分段翻译，使用备用机制
-        const translatedSegments: string[] = []
-        let hasTranslationError = false
-        let currentApi = "mymemory" // 当前使用的 API
-        
-        for (const segment of segments) {
-          let translated: string | null = null
-          
-          // 按优先级尝试翻译 API
-          if (currentApi === "mymemory") {
-            translated = await translateWithMyMemory(segment)
-            if (!translated) {
-              console.log("[v0] MyMemory 失败，切换到 LibreTranslate")
-              currentApi = "libretranslate"
-            }
-          }
-          
-          if (!translated && currentApi === "libretranslate") {
-            translated = await translateWithLibreTranslate(segment)
-            if (!translated) {
-              console.log("[v0] LibreTranslate 失败，切换到 Google Translate")
-              currentApi = "google"
-            }
-          }
-          
-          if (!translated && currentApi === "google") {
-            translated = await translateWithGoogleTranslate(segment)
-          }
-          
-          if (translated) {
-            translatedSegments.push(translated)
-          } else {
-            translatedSegments.push(segment) // 翻译失败，使用原文
-            hasTranslationError = true
-          }
-          
-          // 添加小延迟避免请求过快
-          await new Promise((resolve) => setTimeout(resolve, 100))
-        }
-        
-        if (hasTranslationError) {
-          setTranslationError("翻译失败：部分内容无法翻译")
-        }
-        setTranslatedDescription(translatedSegments.join(""))
+      const { translatedText, errorMessage } = await translateEnToZhWithFallback(text)
+      if (errorMessage) {
+        setTranslationError(errorMessage)
       }
+      setTranslatedDescription(translatedText)
     } catch (error) {
       console.error("[v0] Error translating description:", error)
       setTranslatedDescription("")
@@ -3029,70 +1712,24 @@ export default function LLMAPITester() {
     setIsAddingImageUrl(true)
 
     try {
-      const urlWithCacheBust = imageUrl.trim().includes("?")
-        ? `${imageUrl.trim()}&_t=${Date.now()}`
-        : `${imageUrl.trim()}?_t=${Date.now()}`
-
-      const response = await fetch(urlWithCacheBust, {
-        cache: "no-store", // Force no caching
+      const trimmedUrl = imageUrl.trim()
+      const newImage = await buildMessageImageFromUrl(trimmedUrl)
+      setMessageImages((prev) => [...prev, newImage])
+      setImageUrl("")
+      setShowImageUrlInput(false)
+      toast({
+        title: "成功",
+        description: "图片已加载并添加",
       })
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
-      }
-
-      const blob = await response.blob()
-
-      if (!blob.type.startsWith("image/")) {
-        toast({
-          variant: "destructive",
-          title: "错误",
-          description: "URL 不是有效的图片",
-        })
-        setIsAddingImageUrl(false)
-        return
-      }
-
-      const reader = new FileReader()
-      reader.onload = (event) => {
-        const base64String = event.target?.result as string
-
-        const newImage: MessageImage = {
-          id: Date.now().toString(),
-          type: "url",
-          url: imageUrl.trim(), // Store original URL (without cache-bust parameter)
-          base64: base64String,
-          mimeType: blob.type,
-        }
-
-        setMessageImages((prev) => [...prev, newImage])
-        setImageUrl("")
-        setShowImageUrlInput(false)
-        setIsAddingImageUrl(false)
-        toast({
-          title: "成功",
-          description: "图片已加载并添加",
-        })
-      }
-
-      reader.onerror = () => {
-        toast({
-          variant: "destructive",
-          title: "错误",
-          description: "转换图片失败",
-        })
-        setIsAddingImageUrl(false)
-      }
-
-      reader.readAsDataURL(blob)
     } catch (error) {
       console.error("[v0] Error loading image from URL:", error) // Changed from "[v0] Error loading image from URL:"
-      setIsAddingImageUrl(false)
       toast({
         variant: "destructive",
         title: "加载失败",
         description: error instanceof Error ? error.message : "无法加载图片",
       })
+    } finally {
+      setIsAddingImageUrl(false)
     }
   }
 
@@ -3115,40 +1752,18 @@ export default function LLMAPITester() {
       }
 
       try {
-        const reader = new FileReader()
-        reader.onload = (event) => {
-          const base64String = event.target?.result as string
+        const newImage = await buildMessageImageFromFile(file)
+        setMessageImages((prev) => [...prev, newImage])
+        toast({
+          title: "成功",
+          description: `图片 ${file.name} 已添加`,
+        })
 
-          const newImage: MessageImage = {
-            id: Date.now().toString(),
-            type: "file",
-            base64: base64String,
-            mimeType: file.type,
-            name: file.name,
-          }
-
-          setMessageImages((prev) => [...prev, newImage])
-          toast({
-            title: "成功",
-            description: `图片 ${file.name} 已添加`,
-          })
-
-          // Trigger auto-reload if enabled
-          if (autoReloadImages) {
-            console.log("[v0] Auto-reloading images after upload...")
-            handleTest() // Re-run the test
-          }
+        // Trigger auto-reload if enabled
+        if (autoReloadImages) {
+          console.log("[v0] Auto-reloading images after upload...")
+          handleTest() // Re-run the test
         }
-
-        reader.onerror = () => {
-          toast({
-            variant: "destructive",
-            title: "错误",
-            description: "读取图片文件失败",
-          })
-        }
-
-        reader.readAsDataURL(file)
       } catch (error) {
         console.error("[v0] Error reading image file:", error)
         toast({
@@ -3172,1651 +1787,211 @@ export default function LLMAPITester() {
     }
   }, [autoReloadImages, messageImages])
 
+  const navbarNode = (
+    <Navbar
+      probeStatus={probeStatus}
+      probeDuration={probeDuration}
+      isProbeTesting={isProbeTesting}
+      canProbeTest={!!apiKey && !!model && !!fullApiPath}
+      runProbeTest={runProbeTest}
+      provider={provider}
+      providerOptions={providerOptions}
+      selectedProviderName={selectedProviderOption?.name || provider}
+      handleProviderChange={handleProviderChange}
+      canCurrentProviderUseCustomFields={canCurrentProviderUseCustomFields}
+      isEditingCustomProvider={isEditingCustomProvider}
+      toggleCustomProviderEditing={() => {
+        setIsEditingCustomProvider((prev) => !prev)
+        setCustomProviderSaved(false)
+        setCustomProviderStatusMessage("")
+      }}
+      isCustomModel={isCustomModel}
+      setIsCustomModel={setIsCustomModel}
+      model={model}
+      setModel={setModel}
+      isLoadingModels={isLoadingModels}
+      selectedModelDisplayName={selectedModelDisplayName}
+      modelSearchQuery={modelSearchQuery}
+      setModelSearchQuery={setModelSearchQuery}
+      filteredOpenRouterModels={filteredOpenRouterModels}
+      filteredCerebrasModels={filteredCerebrasModels}
+      filteredModelScopeModels={filteredModelScopeModels}
+      apiKey={apiKey}
+      setApiKey={setApiKey}
+      showApiKey={showApiKey}
+      setShowApiKey={setShowApiKey}
+      handleReset={handleReset}
+      shouldRenderCustomProviderFields={shouldRenderCustomProviderFields}
+      customProviderName={customProviderName}
+      setCustomProviderName={setCustomProviderName}
+      customProviderError={customProviderError}
+      setCustomProviderError={setCustomProviderError}
+      setCustomProviderSaved={setCustomProviderSaved}
+      customProviderStatusMessage={customProviderStatusMessage}
+      setCustomProviderStatusMessage={setCustomProviderStatusMessage}
+      baseURL={baseURL}
+      setBaseURL={setBaseURL}
+      apiPath={apiPath}
+      setApiPath={setApiPath}
+      handleSaveCustomProvider={handleSaveCustomProvider}
+      handleDeleteCustomProvider={handleDeleteCustomProvider}
+      selectedSavedProvider={selectedSavedProvider}
+    />
+  )
+
+  const modelInfoNode =
+    (provider === "openrouter" || provider === "cerebras" || provider === "modelscope") && selectedModelInfo ? (
+      <SelectedModelInfoPanel
+        provider={provider}
+        selectedModelInfo={selectedModelInfo}
+        isTranslating={isTranslating}
+        translatedDescription={translatedDescription}
+        translationError={translationError}
+      />
+    ) : null
+
+  const modelHistoryProps = {
+    modelHistory,
+    paginatedModelHistory,
+    modelHistoryTotalPages,
+    modelHistoryPage,
+    setModelHistoryPage,
+    providerOptions,
+    visibleApiKeys,
+    toggleApiKeyVisibility,
+    runHistoryProbeTest,
+    applyHistoryItem,
+    deleteModelHistoryItem,
+    exportModelHistoryToCSV,
+    clearModelHistory,
+  } satisfies React.ComponentProps<typeof MainDashboard>["modelHistoryProps"]
+
+  const parametersProps = {
+    isExpanded: isParametersExpanded,
+    setIsExpanded: setIsParametersExpanded,
+    handleResetParameters,
+    isTimerRunning,
+    stopTimer,
+    loading,
+    handleInterruptTest,
+    handleStartTest,
+    enablePromptFile,
+    userMessage,
+    setUserMessage,
+    isPromptExpanded,
+    setIsPromptExpanded,
+    showImageUrlInput,
+    setShowImageUrlInput,
+    imageUrl,
+    setImageUrl,
+    isAddingImageUrl,
+    handleAddImageUrl,
+    handleImageFileUpload,
+    autoReloadImages,
+    setAutoReloadImages,
+    messageImages,
+    setZoomedImage,
+    handleRemoveImage,
+    autoReloadPrompt,
+    setAutoReloadPrompt,
+    setEnablePromptFile,
+    promptFilePath,
+    onPromptFilePathChange: (value: string) => {
+      setPromptFilePath(value)
+      setIsPromptFromLocalFile(false)
+      promptFileHandleRef.current = null
+      setLoadedPromptContent("")
+    },
+    loadedPromptContent,
+    isPromptFromLocalFile,
+    canReloadPromptLocalFile: !!promptFileHandleRef.current,
+    reloadPromptLocalFile: () => reloadLocalFile("prompt"),
+    isExternalPromptExpanded,
+    setIsExternalPromptExpanded,
+    pickPromptLocalFile: () => handleLocalFileSelect("prompt"),
+    enableSystemPromptFile,
+    systemPrompt,
+    setSystemPrompt,
+    isSystemPromptExpanded,
+    setIsSystemPromptExpanded,
+    autoReloadSystemPrompt,
+    setAutoReloadSystemPrompt,
+    setEnableSystemPromptFile,
+    systemPromptFilePath,
+    onSystemPromptFilePathChange: (value: string) => {
+      setSystemPromptFilePath(value)
+      setIsSystemPromptFromLocalFile(false)
+      systemPromptFileHandleRef.current = null
+      setLoadedSystemPromptContent("")
+    },
+    loadedSystemPromptContent,
+    isSystemPromptFromLocalFile,
+    canReloadSystemPromptLocalFile: !!systemPromptFileHandleRef.current,
+    reloadSystemPromptLocalFile: () => reloadLocalFile("systemPrompt"),
+    isExternalSystemPromptExpanded,
+    setIsExternalSystemPromptExpanded,
+    pickSystemPromptLocalFile: () => handleLocalFileSelect("systemPrompt"),
+    timerEnabled,
+    setTimerEnabled,
+    timerInterval,
+    setTimerInterval,
+    maxTokens,
+    setMaxTokens,
+    maxTokensLimit,
+    setMaxTokensLimit,
+    temperature,
+    setTemperature,
+    topP,
+    setTopP,
+    frequencyPenalty,
+    setFrequencyPenalty,
+    presencePenalty,
+    setPresencePenalty,
+    error,
+  } satisfies React.ComponentProps<typeof MainDashboard>["parametersProps"]
+
+  const historyChatProps = {
+    history,
+    paginatedHistory,
+    showRawColumns,
+    setShowRawColumns,
+    pageSize,
+    setPageSize,
+    currentPage,
+    setCurrentPage,
+    totalPages,
+    expandedCells,
+    toggleCellExpansion,
+    visibleRawCells,
+    toggleRawVisibility,
+    expandRequestContent,
+    setExpandRequestContent,
+    expandResponseContent,
+    setExpandResponseContent,
+    handleClearHistory,
+    exportHistoryToCSV,
+    handleDeleteHistoryItem,
+    responseImagesMap,
+    onZoomImage: setZoomedImage,
+  } satisfies React.ComponentProps<typeof MainDashboard>["historyChatProps"]
+
+  const requestResponseProps = {
+    requestData,
+    requestCopyText,
+    responseData,
+    responseCopyText,
+    responseDuration,
+    handleCopy,
+  } satisfies React.ComponentProps<typeof MainDashboard>["requestResponseProps"]
+
   return (
-    <div className="min-h-screen bg-background">
-      <nav className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <div className="flex h-16 items-center gap-4 px-4 md:px-8">
-          {/* CHANGE: Removed "LLM API 测试工具" text, keeping only the icon */}
-          <div className="flex items-center gap-2">
-            <Zap className="size-6 text-primary" />
-            {probeStatus !== "idle" && (
-              <div className="ml-2 flex items-center gap-1.5">
-                <div
-                  className={`size-2 rounded-full ${probeStatus === "success" ? "bg-green-500" : "bg-red-500"}`}
-                  title={probeStatus === "success" ? "API 配置正常" : "API 配置异常"}
-                />
-                {probeStatus === "success" && probeDuration && (
-                  <span className="text-xs text-muted-foreground">{probeDuration}ms</span>
-                )}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={runProbeTest}
-                  disabled={isProbeTesting || !apiKey || !model || !fullApiPath}
-                  className="h-6 px-2"
-                  title="重新测试"
-                >
-                  {isProbeTesting ? (
-                    <Loader2 className="size-3 animate-spin" />
-                  ) : (
-                    <RefreshCw className="size-3" />
-                  )}
-                </Button>
-              </div>
-            )}
-          </div>
-
-          <div className="ml-auto flex items-center gap-3">
-            <Select value={provider} onValueChange={handleProviderChange}>
-              <SelectTrigger className="w-[180px]">
-                <SelectValue placeholder="提供商">
-                  {selectedProviderOption?.name || provider}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                {providerOptions.map((p) => (
-                  <SelectItem key={p.id} value={p.id}>
-                    <div className="flex flex-col gap-0.5">
-                      <span className="font-medium">{p.name}</span>
-                      {p.endpoint && <span className="text-xs text-muted-foreground">{p.endpoint}</span>}
-                    </div>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {canCurrentProviderUseCustomFields && (
-              <Button
-                variant="ghost"
-                size="icon"
-                className={`h-9 w-9 ${isEditingCustomProvider ? "bg-muted" : ""}`}
-                onClick={() => {
-                  setIsEditingCustomProvider((prev) => !prev)
-                  setCustomProviderSaved(false)
-                  setCustomProviderStatusMessage("")
-                }}
-                title={isEditingCustomProvider ? "隐藏自定义配置" : "编辑自定义提供商"}
-              >
-                <Pencil className="size-4" />
-              </Button>
-            )}
-
-
-            {provider === "openrouter" || provider === "cerebras" || provider === "modelscope" ? (
-              <div className="flex items-center gap-2">
-                {!isCustomModel ? (
-                  <>
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <Button
-                          variant="outline"
-                          role="combobox"
-                          disabled={isLoadingModels}
-                          className="w-[280px] justify-between bg-transparent"
-                        >
-                          <span className="truncate">
-                            {selectedModelDisplayName || (isLoadingModels ? "加载中..." : "选择模型")}
-                          </span>
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent className="w-[280px] p-0" align="start">
-                        <Command>
-                          <CommandInput
-                            placeholder="搜索模型..."
-                            value={modelSearchQuery}
-                            onValueChange={setModelSearchQuery}
-                          />
-                          <CommandList>
-                            <CommandEmpty>未找到模型</CommandEmpty>
-                            <CommandGroup>
-                              {provider === "openrouter"
-                                ? filteredOpenRouterModels.map((m) => {
-                                    // 检查是否是免费模型（name 中包含 "(free)"）
-                                    const isFreeModel = m.name?.includes("(free)") || false
-                                    // 如果是免费模型，id 需要添加 :free 后缀
-                                    const modelIdToUse = isFreeModel ? `${m.id}:free` : m.id
-                                    // CommandItem 的 value 包含 id 和 name，以便 Command 组件也能搜索 name
-                                    const searchableValue = [m.id, m.name].filter(Boolean).join(" ")
-
-                                    return (
-                                      <CommandItem
-                                        key={m.id}
-                                        value={searchableValue}
-                                        onSelect={() => {
-                                          setModel(modelIdToUse)
-                                          // 不清空搜索词，保持搜索状态
-                                        }}
-                                      >
-                                        <div className="flex flex-col gap-0.5">
-                                          <span className="font-medium">{m.name || m.id}</span>
-                                          {m.context_length && (
-                                            <span className="text-xs text-muted-foreground">{m.context_length} tokens</span>
-                                          )}
-                                        </div>
-                                      </CommandItem>
-                                    )
-                                  })
-                                : provider === "cerebras"
-                                ? filteredCerebrasModels.map((m) => {
-                                    // CommandItem 的 value 包含 id 和 name，以便 Command 组件也能搜索 name
-                                    const searchableValue = [m.id, m.name].filter(Boolean).join(" ")
-
-                                    return (
-                                      <CommandItem
-                                        key={m.id}
-                                        value={searchableValue}
-                                        onSelect={() => {
-                                          setModel(m.id)
-                                          // 不清空搜索词，保持搜索状态
-                                        }}
-                                      >
-                                        <div className="flex flex-col gap-0.5">
-                                          <span className="font-medium">{m.name || m.id}</span>
-                                          {m.context_length && (
-                                            <span className="text-xs text-muted-foreground">{m.context_length} tokens</span>
-                                          )}
-                                        </div>
-                                      </CommandItem>
-                                    )
-                                  })
-                                : filteredModelScopeModels.map((m) => {
-                                    // CommandItem 的 value 包含 id 和 name，以便 Command 组件也能搜索 name
-                                    const searchableValue = [m.id, m.name].filter(Boolean).join(" ")
-
-                                    return (
-                                      <CommandItem
-                                        key={m.id}
-                                        value={searchableValue}
-                                        onSelect={() => {
-                                          setModel(m.id)
-                                          // 不清空搜索词，保持搜索状态
-                                        }}
-                                      >
-                                        <div className="flex flex-col gap-0.5">
-                                          <span className="font-medium">{m.name || m.id}</span>
-                                          {m.context_length && (
-                                            <span className="text-xs text-muted-foreground">{m.context_length} tokens</span>
-                                          )}
-                                          {m.task_types && (
-                                            <span className="text-xs text-muted-foreground">
-                                              {Array.isArray(m.task_types) ? m.task_types.join(", ") : m.task_types}
-                                            </span>
-                                          )}
-                                        </div>
-                                      </CommandItem>
-                                    )
-                                  })}
-                            </CommandGroup>
-                          </CommandList>
-                        </Command>
-                      </PopoverContent>
-                    </Popover>
-                    <Button variant="ghost" size="sm" onClick={() => setIsCustomModel(true)} title="自定义模型">
-                      <Pencil className="size-4" />
-                    </Button>
-                  </>
-                ) : (
-                  <>
-                    <Input
-                      value={model}
-                      onChange={(e) => setModel(e.target.value)}
-                      placeholder="输入自定义模型 ID"
-                      className="w-[280px]"
-                    />
-                    <Button variant="ghost" size="sm" onClick={() => setIsCustomModel(false)} title="返回下拉选择">
-                      <List className="size-4" />
-                    </Button>
-                  </>
-                )}
-              </div>
-            ) : (
-              <Input
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder="eg: gpt-3.5-turbo"
-                className="w-[200px]"
-              />
-            )}
-
-            <div className="relative flex items-center">
-              <Input
-                type={showApiKey ? "text" : "password"}
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="API Key"
-                className="w-[200px] pr-10"
-              />
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setShowApiKey(!showApiKey)}
-                className="absolute right-0 h-full px-3 hover:bg-transparent"
-                title={showApiKey ? "隐藏 API Key" : "显示 API Key"}
-              >
-                {showApiKey ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-              </Button>
-            </div>
-            <Button variant="outline" size="sm" onClick={handleReset}>
-              <RotateCcw className="mr-2 size-4" />
-              重置
-            </Button>
-          </div>
-        </div>
-
-        {shouldRenderCustomProviderFields && (
-          <div className="border-t px-4 py-3 md:px-8">
-            <div className="flex flex-col gap-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <Input
-                  id="customProviderName"
-                  value={customProviderName}
-                  onChange={(e) => {
-                    setCustomProviderName(e.target.value)
-                    if (customProviderError) setCustomProviderError("")
-                    setCustomProviderSaved(false)
-                    setCustomProviderStatusMessage("")
-                  }}
-                  placeholder="提供商名称"
-                  className="min-w-[140px] flex-1"
-                />
-                <Input
-                  id="baseURL"
-                  value={baseURL}
-                  onChange={(e) => {
-                    setBaseURL(e.target.value)
-                    setCustomProviderSaved(false)
-                    setCustomProviderStatusMessage("")
-                  }}
-                  placeholder="https://api.example.com"
-                  className="min-w-[180px] flex-1"
-                />
-                <Input
-                  id="apiPath"
-                  value={apiPath}
-                  onChange={(e) => {
-                    setApiPath(e.target.value)
-                    setCustomProviderSaved(false)
-                    setCustomProviderStatusMessage("")
-                  }}
-                  placeholder="/v1/chat/completions"
-                  className="min-w-[160px] flex-1"
-                />
-                <Button size="sm" onClick={handleSaveCustomProvider}>
-                  保存
-                </Button>
-                {selectedSavedProvider && (
-                  <Button variant="destructive" size="sm" onClick={handleDeleteCustomProvider}>
-                    删除
-                  </Button>
-                )}
-              </div>
-              {customProviderError && <p className="text-xs text-destructive">{customProviderError}</p>}
-            </div>
-          </div>
-        )}
-        {!shouldRenderCustomProviderFields && customProviderStatusMessage && (
-          <div className="border-t px-4 py-2 text-xs text-emerald-600 md:px-8">{customProviderStatusMessage}</div>
-        )}
-      </nav>
-
-      {/* OpenRouter 和 Cerebras 模型信息显示 */}
-      {(provider === "openrouter" || provider === "cerebras" || provider === "modelscope") && selectedModelInfo && (
-        <div className="border-b bg-muted/30 px-4 py-3 md:px-8">
-          <div className="max-w-7xl mx-auto space-y-2">
-            {selectedModelInfo.description && (
-              <div className="space-y-2">
-                {isTranslating ? (
-                  <p className="text-sm text-muted-foreground leading-relaxed">
-                    {selectedModelInfo.description}
-                    <span className="ml-2 text-xs opacity-60">翻译中...</span>
-                  </p>
-                ) : translatedDescription ? (
-                  <>
-                    <p className="text-sm text-muted-foreground leading-relaxed">{translatedDescription}</p>
-                    <details className="text-xs">
-                      <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
-                        查看原文
-                      </summary>
-                      <p className="mt-2 text-muted-foreground leading-relaxed">{selectedModelInfo.description}</p>
-                    </details>
-                  </>
-                ) : translationError ? (
-                  <div className="space-y-1">
-                    <p className="text-sm text-destructive leading-relaxed">{translationError}</p>
-                    <details className="text-xs">
-                      <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
-                        查看原文
-                      </summary>
-                      <p className="mt-2 text-muted-foreground leading-relaxed">{selectedModelInfo.description}</p>
-                    </details>
-                  </div>
-                ) : (
-                  <p className="text-sm text-muted-foreground leading-relaxed">{selectedModelInfo.description}</p>
-                )}
-              </div>
-            )}
-            <div className="flex items-center gap-4 text-xs text-muted-foreground">
-              {selectedModelInfo.link && (() => {
-                // 如果 name 包含 "(free)"，link 也增加 :free
-                const isFreeModel = selectedModelInfo.name?.includes("(free)") || false
-                const linkToUse = isFreeModel ? `${selectedModelInfo.link}:free` : selectedModelInfo.link
-                return (
-                  <a
-                    href={linkToUse}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center gap-1 hover:text-primary transition-colors"
-                  >
-                    <Link className="size-3" />
-                    查看模型详情
-                  </a>
-                )
-              })()}
-              {selectedModelInfo.pub_date && (
-                <span className="flex items-center gap-1">
-                  <span>发布日期: {selectedModelInfo.pub_date}</span>
-                </span>
-              )}
-              {provider === "modelscope" && (() => {
-                const modelScopeInfo = selectedModelInfo as ModelScopeModel
-                return (
-                  <>
-                    {modelScopeInfo.time && (
-                      <span className="flex items-center gap-1">
-                        <span>{modelScopeInfo.time}</span>
-                      </span>
-                    )}
-                    {modelScopeInfo.task_types && (
-                      <span className="flex items-center gap-1">
-                        <span>{Array.isArray(modelScopeInfo.task_types) ? modelScopeInfo.task_types.join(", ") : modelScopeInfo.task_types}</span>
-                      </span>
-                    )}
-                    {modelScopeInfo.downloads !== undefined && (
-                      <span className="flex items-center gap-1">
-                        <Download className="size-3" />
-                        <span>{modelScopeInfo.downloads.toLocaleString()}</span>
-                      </span>
-                    )}
-                    {modelScopeInfo.stars !== undefined && (
-                      <span className="flex items-center gap-1">
-                        <Heart className="size-3 fill-current" />
-                        <span>{modelScopeInfo.stars.toLocaleString()}</span>
-                      </span>
-                    )}
-                  </>
-                )
-              })()}
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="p-4 md:p-8">
-        <div className="max-w-7xl mx-auto space-y-6">
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle>历史模型</CardTitle>
-                  <CardDescription>保存的模型配置和探针测试结果</CardDescription>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={exportModelHistoryToCSV}
-                    disabled={modelHistory.length === 0}
-                  >
-                    <Download className="mr-2 size-4" />
-                    导出CSV
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={handleClearHistory} disabled={modelHistory.length === 0}>
-                    <Trash2 className="mr-2 size-4" />
-                    清空
-                  </Button>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {modelHistory.length === 0 ? (
-                <div className="text-center py-8 text-muted-foreground">暂无历史记录</div>
-              ) : (
-                <>
-                  <div className="border rounded-lg overflow-hidden">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead className="w-[180px]">时间</TableHead>
-                          <TableHead className="w-[120px]">提供商</TableHead>
-                          <TableHead className="w-[200px]">模型名</TableHead>
-                          <TableHead className="w-[150px]">API Key</TableHead>
-                          <TableHead className="w-[150px]">状态</TableHead>
-                          <TableHead className="w-[200px]">操作</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {paginatedModelHistory.map((item) => (
-                          <TableRow key={item.id}>
-                            <TableCell className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap align-top">
-                              {new Date(item.timestamp).toLocaleString("zh-CN", {
-                                month: "2-digit",
-                                day: "2-digit",
-                                hour: "2-digit",
-                                minute: "2-digit",
-                                second: "2-digit",
-                              })}
-                            </TableCell>
-                            <TableCell className="text-sm">
-                              {providerOptions.find((p) => p.id === item.provider)?.name || item.provider}
-                            </TableCell>
-                            <TableCell className="text-sm font-mono">{item.model}</TableCell>
-                            <TableCell className="text-sm font-mono">
-                              <div className="flex items-center gap-2">
-                                <span className="flex-1">
-                                  {visibleApiKeys.has(item.id) ? item.apiKey : `${item.apiKey.substring(0, 10)}...`}
-                                </span>
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => toggleApiKeyVisibility(item.id)}
-                                  className="h-6 w-6 p-0"
-                                  title={visibleApiKeys.has(item.id) ? "隐藏 API Key" : "显示 API Key"}
-                                >
-                                  {visibleApiKeys.has(item.id) ? (
-                                    <EyeOff className="size-3" />
-                                  ) : (
-                                    <Eye className="size-3" />
-                                  )}
-                                </Button>
-                              </div>
-                            </TableCell>
-                            <TableCell>
-                              <div className="flex items-center gap-2">
-                                {item.status === "success" && (
-                                  <>
-                                    <div className="size-2 rounded-full bg-green-500" />
-                                    <span className="text-sm text-green-600">{item.duration}ms</span>
-                                  </>
-                                )}
-                                {item.status === "error" && (
-                                  <>
-                                    <div className="size-2 rounded-full bg-red-500" />
-                                    <span className="text-sm text-red-600">失败</span>
-                                  </>
-                                )}
-                                {item.status === "idle" && (
-                                  <>
-                                    <div className="size-2 rounded-full bg-gray-400" />
-                                    <span className="text-sm text-muted-foreground">未测试</span>
-                                  </>
-                                )}
-                              </div>
-                            </TableCell>
-                            <TableCell>
-                              <div className="flex items-center gap-2">
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => runHistoryProbeTest(item)}
-                                  title="探针测试"
-                                >
-                                  <Activity className="size-4" />
-                                </Button>
-                                <Button variant="default" size="sm" onClick={() => applyHistoryItem(item)}>
-                                  <Check className="mr-1 size-3" />
-                                  应用
-                                </Button>
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => deleteModelHistoryItem(item.id)}
-                                  title="删除"
-                                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                                >
-                                  <Trash2 className="size-4" />
-                                </Button>
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-
-                  {/* Pagination */}
-                  {modelHistoryTotalPages > 1 && (
-                    <div className="flex items-center justify-between mt-4">
-                      <div className="text-sm text-muted-foreground">
-                        共 {modelHistory.length} 条记录，第 {modelHistoryPage} / {modelHistoryTotalPages} 页
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setModelHistoryPage((p) => Math.max(1, p - 1))}
-                          disabled={modelHistoryPage === 1}
-                        >
-                          <ChevronLeft className="size-4" />
-                        </Button>
-                        <div className="text-sm font-medium">{modelHistoryPage}</div>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setModelHistoryPage((p) => Math.min(modelHistoryTotalPages, p + 1))}
-                          disabled={modelHistoryPage === modelHistoryTotalPages}
-                        >
-                          <ChevronRight className="size-4" />
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Parameters Configuration - Full width */}
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Button variant="ghost" size="sm" onClick={() => setIsParametersExpanded(!isParametersExpanded)}>
-                    {isParametersExpanded ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
-                  </Button>
-                  <div>
-                    <CardTitle>参数配置</CardTitle>
-                    <CardDescription>调整 Chat Completion 参数</CardDescription>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={handleResetParameters}>
-                    <RotateCcw className="mr-2 size-4" />
-                    重置参数
-                  </Button>
-                  {isTimerRunning ? (
-                    <Button onClick={stopTimer} variant="destructive" size="sm">
-                      <StopCircle className="mr-2 size-4" />
-                      停止定时
-                    </Button>
-                  ) : loading ? (
-                    <Button onClick={handleInterruptTest} variant="destructive" size="sm">
-                      <X className="mr-2 size-4" />
-                      中断
-                    </Button>
-                  ) : (
-                    <Button onClick={handleStartTest} disabled={loading} size="sm">
-                      <Play className="mr-2 size-4" />
-                      开始测试
-                    </Button>
-                  )}
-                </div>
-              </div>
-            </CardHeader>
-            {isParametersExpanded && (
-              <CardContent className="space-y-4">
-                <div className="space-y-4">
-                  {!enablePromptFile && (
-                    <>
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <Label htmlFor="userMessage">用户消息</Label>
-                          <p className="text-xs text-muted-foreground">输入测试用的消息内容</p>
-                        </div>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setIsPromptExpanded(!isPromptExpanded)}
-                        >
-                          {isPromptExpanded ? (
-                            <>
-                              <ChevronUp className="mr-1 h-4 w-4" />
-                              收起
-                            </>
-                          ) : (
-                            <>
-                              <ChevronDown className="mr-1 h-4 w-4" />
-                              展开
-                            </>
-                          )}
-                        </Button>
-                      </div>
-                      <Textarea
-                        id="userMessage"
-                        value={userMessage}
-                        onChange={(e) => setUserMessage(e.target.value)}
-                        placeholder="输入你的提示词..."
-                        rows={3}
-                        className={isPromptExpanded ? "" : "max-h-32 overflow-y-auto"}
-                      />
-                    </>
-                  )}
-
-                  <div className="space-y-2 pt-2">
-                    <div className="flex items-center justify-between">
-                      <Label className="flex items-center gap-1.5">
-                        <ImageIcon className="h-3.5 w-3.5" />
-                        图片附件
-                      </Label>
-                      <div className="flex items-center gap-2">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setShowImageUrlInput(!showImageUrlInput)}
-                        >
-                          <Link className="mr-1 h-3.5 w-3.5" />
-                          添加链接
-                        </Button>
-                        <Button type="button" variant="outline" size="sm" onClick={handleImageFileUpload}>
-                          <Upload className="h-4 w-4 mr-1" />
-                          上传文件
-                        </Button>
-                        <div className="flex items-center gap-2 ml-auto">
-                          <input
-                            type="checkbox"
-                            id="autoReloadImages"
-                            checked={autoReloadImages}
-                            onChange={(e) => setAutoReloadImages(e.target.checked)}
-                            className="h-4 w-4 rounded border-input bg-background accent-primary cursor-pointer"
-                          />
-                          <Label htmlFor="autoReloadImages" className="cursor-pointer font-normal text-sm">
-                            自动重载
-                          </Label>
-                        </div>
-                      </div>
-                    </div>
-
-                    {showImageUrlInput && (
-                      <div className="flex flex-col gap-2">
-                        <div className="flex gap-2">
-                          <Input
-                            placeholder="输入图片链接 (https://...)"
-                            value={imageUrl}
-                            onChange={(e) => setImageUrl(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") {
-                                handleAddImageUrl()
-                              }
-                            }}
-                            disabled={isAddingImageUrl}
-                          />
-                          <Button onClick={handleAddImageUrl} size="sm" disabled={isAddingImageUrl}>
-                            {isAddingImageUrl ? (
-                              <>
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                              </>
-                            ) : (
-                              "添加"
-                            )}
-                          </Button>
-                          <Button
-                            onClick={() => {
-                              setShowImageUrlInput(false)
-                              setImageUrl("")
-                            }}
-                            variant="ghost"
-                            size="sm"
-                            disabled={isAddingImageUrl}
-                          >
-                            取消
-                          </Button>
-                        </div>
-                        <p className="text-xs text-muted-foreground">
-                          示例: https://api.btstu.cn/sjbz/api.php?lx=dongman&format=images
-                        </p>
-                      </div>
-                    )}
-
-                    {/* Image previews grid */}
-                    {messageImages.length > 0 && (
-                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-                        {messageImages.map((img) => (
-                          <div key={img.id} className="relative group rounded-md border overflow-hidden">
-                            <img
-                              src={img.base64 || img.url}
-                              alt={img.name || "Image"}
-                              className="w-full h-24 object-cover cursor-pointer hover:opacity-80 transition-opacity"
-                              onClick={() => setZoomedImage(img)}
-                            />
-                            <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
-                              <Button
-                                type="button"
-                                variant="secondary"
-                                size="sm"
-                                onClick={() => setZoomedImage(img)}
-                                title="放大查看"
-                              >
-                                <ZoomIn className="h-4 w-4" />
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="destructive"
-                                size="sm"
-                                onClick={() => handleRemoveImage(img.id)}
-                                title="删除图片"
-                              >
-                                <X className="h-4 w-4" />
-                              </Button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="space-y-1.5 pt-2">
-                    <div className="flex items-center justify-between">
-                      <Label className="flex items-center gap-1.5">
-                        <FileText className="h-3.5 w-3.5" />
-                        从外部加载用户消息
-                      </Label>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          id="enablePromptFile"
-                          checked={enablePromptFile}
-                          onChange={(e) => setEnablePromptFile(e.target.checked)}
-                          className="h-4 w-4 rounded border-input bg-background accent-primary cursor-pointer"
-                        />
-                        <Label htmlFor="enablePromptFile" className="cursor-pointer font-normal text-sm">
-                          启用
-                        </Label>
-                        <input
-                          type="checkbox"
-                          id="autoReloadPrompt"
-                          checked={autoReloadPrompt}
-                          onChange={(e) => setAutoReloadPrompt(e.target.checked)}
-                          disabled={!enablePromptFile}
-                          className="h-4 w-4 rounded border-input bg-background accent-primary cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                        />
-                        <Label htmlFor="autoReloadPrompt" className="cursor-pointer font-normal text-sm">
-                          自动重载
-                        </Label>
-                      </div>
-                    </div>
-                    {enablePromptFile && (
-                      <>
-                        <div className="flex gap-2">
-                          <Input
-                            id="promptFilePath"
-                            value={promptFilePath}
-                            onChange={(e) => {
-                              setPromptFilePath(e.target.value)
-                              setIsPromptFromLocalFile(false)
-                              promptFileHandleRef.current = null
-                              setLoadedPromptContent("")
-                            }}
-                            placeholder="https://example.com/prompt.txt 或点击选择本地文件"
-                            className="text-sm flex-1"
-                          />
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleLocalFileSelect("prompt")}
-                            className="shrink-0"
-                          >
-                            <Upload className="h-4 w-4 mr-1" />
-                            选择文件
-                          </Button>
-                        </div>
-                        <p className="text-xs text-muted-foreground">
-                          支持 HTTP/HTTPS 链接或本地文件。点击"选择文件"按钮可直接选择本地 .txt 或 .md 文件。
-                        </p>
-                      </>
-                    )}
-
-                    {enablePromptFile && loadedPromptContent && (
-                      <div className="space-y-1.5 pt-2">
-                        <div className="flex items-center justify-between">
-                          <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
-                            外部加载的消息预览
-                            {isPromptFromLocalFile && (
-                              <span className="bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded text-[10px]">
-                                本地文件
-                              </span>
-                            )}
-                          </Label>
-                          <div className="flex items-center gap-1">
-                            {isPromptFromLocalFile && promptFileHandleRef.current && (
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => reloadLocalFile("prompt")}
-                                title="重新加载文件"
-                              >
-                                <RotateCcw className="h-4 w-4" />
-                              </Button>
-                            )}
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => setIsExternalPromptExpanded(!isExternalPromptExpanded)}
-                            >
-                              {isExternalPromptExpanded ? (
-                                <>
-                                  <ChevronUp className="mr-1 h-4 w-4" />
-                                  收起
-                                </>
-                              ) : (
-                                <>
-                                  <ChevronDown className="mr-1 h-4 w-4" />
-                                  展开
-                                </>
-                              )}
-                            </Button>
-                          </div>
-                        </div>
-                        <Textarea
-                          value={loadedPromptContent}
-                          readOnly
-                          className={`bg-muted/50 text-sm font-mono cursor-default overflow-y-auto transition-all duration-200 ${
-                            isExternalPromptExpanded ? "h-60" : "h-20"
-                          }`}
-                        />
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="space-y-4">
-                    {!enableSystemPromptFile && (
-                      <>
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <Label htmlFor="systemPrompt">系统提示词</Label>
-                            <p className="text-xs text-muted-foreground">为AI设置角色或行为指令</p>
-                          </div>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setIsSystemPromptExpanded(!isSystemPromptExpanded)}
-                          >
-                            {isSystemPromptExpanded ? (
-                              <>
-                                <ChevronUp className="mr-1 h-4 w-4" />
-                                收起
-                              </>
-                            ) : (
-                              <>
-                                <ChevronDown className="mr-1 h-4 w-4" />
-                                展开
-                              </>
-                            )}
-                          </Button>
-                        </div>
-                        <Textarea
-                          id="systemPrompt"
-                          value={systemPrompt}
-                          onChange={(e) => setSystemPrompt(e.target.value)}
-                          placeholder="例如: 你是一个乐于助人的助手。"
-                          rows={2}
-                          className={isSystemPromptExpanded ? "" : "max-h-32 overflow-y-auto"}
-                        />
-                      </>
-                    )}
-
-                    <div className="space-y-1.5 pt-2">
-                      <div className="flex items-center justify-between">
-                        <Label htmlFor="systemPromptFilePath" className="flex items-center gap-1.5">
-                          <FileText className="h-3.5 w-3.5" />
-                          从外部加载系统提示词
-                        </Label>
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            id="enableSystemPromptFile"
-                            checked={enableSystemPromptFile}
-                            onChange={(e) => setEnableSystemPromptFile(e.target.checked)}
-                            className="h-4 w-4 rounded border-input bg-background accent-primary cursor-pointer"
-                          />
-                          <Label htmlFor="enableSystemPromptFile" className="cursor-pointer font-normal text-sm">
-                            启用
-                          </Label>
-                          <input
-                            type="checkbox"
-                            id="autoReloadSystemPrompt"
-                            checked={autoReloadSystemPrompt}
-                            onChange={(e) => setAutoReloadSystemPrompt(e.target.checked)}
-                            disabled={!enableSystemPromptFile}
-                            className="h-4 w-4 rounded border-input bg-background accent-primary cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                          />
-                          <Label htmlFor="autoReloadSystemPrompt" className="cursor-pointer font-normal text-sm">
-                            自动重载
-                          </Label>
-                        </div>
-                      </div>
-                      {enableSystemPromptFile && (
-                        <>
-                          <div className="flex gap-2">
-                            <Input
-                              id="systemPromptFilePath"
-                              value={systemPromptFilePath}
-                              onChange={(e) => {
-                                setSystemPromptFilePath(e.target.value)
-                                setIsSystemPromptFromLocalFile(false)
-                                systemPromptFileHandleRef.current = null
-                                setLoadedSystemPromptContent("")
-                              }}
-                              placeholder="https://example.com/system-prompt.txt 或点击选择本地文件"
-                              className="text-sm flex-1"
-                            />
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={() => handleLocalFileSelect("systemPrompt")}
-                              className="shrink-0"
-                            >
-                              <Upload className="h-4 w-4 mr-1" />
-                              选择文件
-                            </Button>
-                          </div>
-                          <p className="text-xs text-muted-foreground">
-                            支持 HTTP/HTTPS 链接或本地文件。点击"选择文件"按钮可直接选择本地 .txt 或 .md 文件。
-                          </p>
-                        </>
-                      )}
-
-                      {enableSystemPromptFile && loadedSystemPromptContent && (
-                        <div className="space-y-1.5 pt-2">
-                          <div className="flex items-center justify-between">
-                            <Label className="text-xs text-muted-foreground flex items-center gap-1.5">
-                              外部加载的系统提示词预览
-                              {isSystemPromptFromLocalFile && (
-                                <span className="bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded text-[10px]">
-                                  本地文件
-                                </span>
-                              )}
-                            </Label>
-                            <div className="flex items-center gap-1">
-                              {isSystemPromptFromLocalFile && systemPromptFileHandleRef.current && (
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => reloadLocalFile("systemPrompt")}
-                                  title="重新加载文件"
-                                >
-                                  <RotateCcw className="h-4 w-4" />
-                                </Button>
-                              )}
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setIsExternalSystemPromptExpanded(!isExternalSystemPromptExpanded)}
-                              >
-                                {isExternalSystemPromptExpanded ? (
-                                  <>
-                                    <ChevronUp className="mr-1 h-4 w-4" />
-                                    收起
-                                  </>
-                                ) : (
-                                  <>
-                                    <ChevronDown className="mr-1 h-4 w-4" />
-                                    展开
-                                  </>
-                                )}
-                              </Button>
-                            </div>
-                          </div>
-                          <Textarea
-                            value={loadedSystemPromptContent}
-                            readOnly
-                            className={`bg-muted/50 text-sm font-mono cursor-default overflow-y-auto transition-all duration-200 ${
-                              isExternalSystemPromptExpanded ? "h-60" : "h-20"
-                            }`}
-                          />
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div className="space-y-0.5">
-                      <Label>定时配置</Label>
-                      <p className="text-xs text-muted-foreground">设置自动定时执行测试</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-6">
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        id="timerEnabled"
-                        checked={timerEnabled}
-                        onChange={(e) => {
-                          setTimerEnabled(e.target.checked)
-                          if (!e.target.checked && isTimerRunning) {
-                            stopTimer()
-                          }
-                        }}
-                        className="h-4 w-4 rounded border-input bg-background accent-primary cursor-pointer"
-                      />
-                      <Label htmlFor="timerEnabled" className="cursor-pointer font-normal">
-                        启用定时执行
-                      </Label>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Label htmlFor="timerInterval" className="text-sm text-muted-foreground whitespace-nowrap">
-                        间隔时间
-                      </Label>
-                      <Input
-                        id="timerInterval"
-                        type="number"
-                        value={timerInterval}
-                        onChange={(e) => setTimerInterval(Math.max(1, Number(e.target.value)))}
-                        className="w-20 h-8"
-                        min={1}
-                        disabled={!timerEnabled} // Disable input if timer is not enabled
-                      />
-                      <span className="text-sm text-muted-foreground">秒</span>
-                    </div>
-                    {isTimerRunning && (
-                      <span className="text-xs text-muted-foreground bg-primary/10 px-2 py-1 rounded">
-                        定时运行中 (每 {timerInterval} 秒)
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div className="space-y-0.5">
-                      <Label htmlFor="maxTokens">Max Tokens</Label>
-                      <p className="text-xs text-muted-foreground">最大生成令牌数量（范围: 1 - {maxTokensLimit}）</p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium">{maxTokens}</span>
-                      <span className="text-sm font-medium">/</span>
-                      <Input
-                        type="number"
-                        value={maxTokensLimit}
-                        onChange={(e) => {
-                          const newLimit = Math.max(1, Number(e.target.value))
-                          setMaxTokensLimit(newLimit)
-                          if (maxTokens > newLimit) {
-                            setMaxTokens(newLimit)
-                          }
-                        }}
-                        className="w-20 h-8 text-xs"
-                        min={1}
-                      />
-                    </div>
-                  </div>
-                  <Slider
-                    id="maxTokens"
-                    min={1}
-                    max={maxTokensLimit}
-                    step={1}
-                    value={[maxTokens]}
-                    onValueChange={(v) => setMaxTokens(v[0])}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div className="space-y-0.5">
-                      <Label htmlFor="temperature">Temperature</Label>
-                      <p className="text-xs text-muted-foreground">控制输出随机性，值越高越随机（范围: 0.0 - 2.0）</p>
-                    </div>
-                    <span className="text-sm font-medium">{temperature?.toFixed(2) ?? "1.00"}</span>
-                  </div>
-                  <Slider
-                    id="temperature"
-                    min={0}
-                    max={2}
-                    step={0.01}
-                    value={[temperature]}
-                    onValueChange={(v) => setTemperature(v[0])}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div className="space-y-0.5">
-                      <Label htmlFor="topP">Top P</Label>
-                      <p className="text-xs text-muted-foreground">核采样，控制输出多样性（范围: 0.0 - 1.0）</p>
-                    </div>
-                    <span className="text-sm font-medium">{topP?.toFixed(2) ?? "1.00"}</span>
-                  </div>
-                  <Slider id="topP" min={0} max={1} step={0.01} value={[topP]} onValueChange={(v) => setTopP(v[0])} />
-                </div>
-
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div className="space-y-0.5">
-                      <Label htmlFor="frequencyPenalty">Frequency Penalty</Label>
-                      <p className="text-xs text-muted-foreground">
-                        降低重复词频率，值越大惩罚越强（范围: -2.0 - 2.0）
-                      </p>
-                    </div>
-                    <span className="text-sm font-medium">{frequencyPenalty?.toFixed(2) ?? "0.00"}</span>
-                  </div>
-                  <Slider
-                    id="frequencyPenalty"
-                    min={-2}
-                    max={2}
-                    step={0.01}
-                    value={[frequencyPenalty]}
-                    onValueChange={(v) => setFrequencyPenalty(v[0])}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div className="space-y-0.5">
-                      <Label htmlFor="presencePenalty">Presence Penalty</Label>
-                      <p className="text-xs text-muted-foreground">
-                        鼓励谈论新话题，值越大越倾向新内容（范围: -2.0 - 2.0）
-                      </p>
-                    </div>
-                    <span className="text-sm font-medium">{presencePenalty?.toFixed(2) ?? "0.00"}</span>
-                  </div>
-                  <Slider
-                    id="presencePenalty"
-                    min={-2}
-                    max={2}
-                    step={0.01}
-                    value={[presencePenalty]}
-                    onValueChange={(v) => setPresencePenalty(v[0])}
-                  />
-                </div>
-
-                {error && <div className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{error}</div>}
-              </CardContent>
-            )}
-          </Card>
-
-          {/* History - Full width table format */}
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle>历史对话</CardTitle>
-                  <CardDescription>共 {history.length} 条记录</CardDescription>
-                </div>
-                <div className="flex items-center gap-2">
-                  <label className="flex items-center gap-2 text-sm cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={showRawColumns}
-                      onChange={(e) => setShowRawColumns(e.target.checked)}
-                      className="size-4 cursor-pointer"
-                    />
-                    <span>显示 Raw</span>
-                  </label>
-                  <Select value={String(pageSize)} onValueChange={(v) => setPageSize(Number(v))}>
-                    <SelectTrigger className="w-[120px]">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="3">3 条/页</SelectItem>
-                      <SelectItem value="10">10 条/页</SelectItem>
-                      <SelectItem value="50">50 条/页</SelectItem>
-                      <SelectItem value="100">100 条/页</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <Button variant="outline" size="sm" onClick={handleClearHistory} disabled={history.length === 0}>
-                    <RotateCcw className="mr-2 size-4" />
-                    清空
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={exportHistoryToCSV} disabled={history.length === 0}>
-                    <Download className="mr-2 size-4" />
-                    导出 CSV
-                  </Button>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {history.length === 0 ? (
-                <div className="text-center py-8 text-muted-foreground">暂无历史记录</div>
-              ) : (
-                <>
-                  <div className="border rounded-lg overflow-hidden">
-                    <div className="overflow-x-auto">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead className="w-[140px]">时间/用时</TableHead>
-                            <TableHead className="w-[120px]">模型</TableHead>
-                            <TableHead>
-                              <div className="flex items-center gap-2">
-                                <span>请求 Content</span>
-                                <label className="flex items-center gap-1 cursor-pointer" title="展开所有请求内容">
-                                  <input
-                                    type="checkbox"
-                                    checked={expandRequestContent}
-                                    onChange={(e) => setExpandRequestContent(e.target.checked)}
-                                    className="size-3 cursor-pointer"
-                                  />
-                                </label>
-                              </div>
-                            </TableHead>
-                            {showRawColumns && <TableHead className="w-[100px]">请求 Raw</TableHead>}
-                            <TableHead>
-                              <div className="flex items-center gap-2">
-                                <span>响应 Content</span>
-                                <label className="flex items-center gap-1 cursor-pointer" title="展开所有响应内容">
-                                  <input
-                                    type="checkbox"
-                                    checked={expandResponseContent}
-                                    onChange={(e) => setExpandResponseContent(e.target.checked)}
-                                    className="size-3 cursor-pointer"
-                                  />
-                                </label>
-                              </div>
-                            </TableHead>
-                            {showRawColumns && <TableHead className="w-[100px]">响应 Raw</TableHead>}
-                            <TableHead className="px-4 py-3 text-center font-medium w-[80px]">操作</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody className="divide-y">
-                          {paginatedHistory.map((item) => {
-                            const requestContentId = `request-${item.timestamp}`
-                            const responseContentId = `response-${item.timestamp}`
-
-                            // Extract images from response content (优先从 IndexedDB 加载的 base64 图片)
-                            const responseImages = extractImagesFromResponseContent(
-                              item.responseContent,
-                              item.responseRaw,
-                              responseImagesMap,
-                              item.timestamp,
-                            )
-
-                            return (
-                              <TableRow key={item.timestamp} className="hover:bg-muted/50">
-                                <TableCell className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap align-top">
-                                  <div className="flex flex-col gap-0.5">
-                                    <span>
-                                      {new Date(item.timestamp).toLocaleString("zh-CN", {
-                                        month: "2-digit",
-                                        day: "2-digit",
-                                        hour: "2-digit",
-                                        minute: "2-digit",
-                                        second: "2-digit",
-                                      })}
-                                    </span>
-                                    <span className="font-mono text-[10px]">
-                                      {item.duration !== undefined && item.duration !== null ? (
-                                        <>{item.duration}ms</>
-                                      ) : (
-                                        <span className="text-muted-foreground/50">-</span>
-                                      )}
-                                    </span>
-                                  </div>
-                                </TableCell>
-                                <TableCell className="px-4 py-3 text-xs align-top">
-                                  <span className="font-mono block truncate" title={item.model}>
-                                    {item.model}
-                                  </span>
-                                </TableCell>
-
-                                <TableCell>
-                                  <div className="max-w-xl space-y-2">
-                                    {(() => {
-                                      const images = extractImagesFromRequestContent(item.requestContent)
-                                      if (images.length > 0) {
-                                        return (
-                                          <div className="grid grid-cols-3 gap-1 mb-2">
-                                            {images.map((imgUrl, idx) => (
-                                              <div
-                                                key={idx}
-                                                className="relative group rounded border overflow-hidden bg-muted"
-                                              >
-                                                <img
-                                                  src={imgUrl || "/placeholder.svg"}
-                                                  alt={`Request image ${idx + 1}`}
-                                                  className="w-full h-16 object-cover cursor-pointer hover:opacity-80 transition-opacity"
-                                                  onClick={() =>
-                                                    setZoomedImage({
-                                                      id: `history-${item.timestamp}-${idx}`,
-                                                      type: "url",
-                                                      base64: imgUrl,
-                                                    })
-                                                  }
-                                                />
-                                                <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                                                  <Button
-                                                    type="button"
-                                                    variant="secondary"
-                                                    size="sm"
-                                                    onClick={() =>
-                                                      setZoomedImage({
-                                                        id: `history-${item.timestamp}-${idx}`,
-                                                        type: "url",
-                                                        base64: imgUrl,
-                                                      })
-                                                    }
-                                                    title="放大查看"
-                                                  >
-                                                    <ZoomIn className="h-3 w-3" />
-                                                  </Button>
-                                                </div>
-                                              </div>
-                                            ))}
-                                          </div>
-                                        )
-                                      }
-                                      return null
-                                    })()}
-                                    <pre
-                                      className={`text-xs whitespace-pre-wrap break-words ${
-                                        !expandRequestContent && !expandedCells.has(requestContentId)
-                                          ? "line-clamp-2"
-                                          : ""
-                                      }`}
-                                    >
-                                      {formatRequestContentForDisplay(item.requestContent)}
-                                    </pre>
-                                    {!expandRequestContent && item.requestContent.length > 100 && (
-                                      <button
-                                        onClick={() => toggleCellExpansion(requestContentId)}
-                                        className="text-xs text-primary hover:underline flex items-center gap-1"
-                                      >
-                                        {expandedCells.has(requestContentId) ? (
-                                          <>
-                                            <ChevronUp className="size-3" />
-                                            收起
-                                          </>
-                                        ) : (
-                                          <>
-                                            <ChevronDown className="size-3" />
-                                            展开
-                                          </>
-                                        )}
-                                      </button>
-                                    )}
-                                  </div>
-                                </TableCell>
-
-                                {showRawColumns && (
-                                  <TableCell className="px-4 py-3 align-top">
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={() => toggleRawVisibility(`request-raw-${item.timestamp}`)}
-                                      className="h-7 text-xs"
-                                    >
-                                      {visibleRawCells.has(`request-raw-${item.timestamp}`) ? "隐藏" : "显示"}
-                                    </Button>
-                                    {visibleRawCells.has(`request-raw-${item.timestamp}`) && (
-                                      <div className="mt-2 space-y-1">
-                                        <pre
-                                          className={`text-xs bg-muted p-2 rounded whitespace-pre-wrap break-words ${
-                                            !expandAllHistory && !expandedCells.has(`request-raw-${item.timestamp}`)
-                                              ? "line-clamp-2"
-                                              : ""
-                                          }`}
-                                        >
-                                          {item.requestRaw}
-                                        </pre>
-                                        {!expandAllHistory && item.requestRaw.length > 100 && (
-                                          <button
-                                            onClick={() => toggleCellExpansion(`request-raw-${item.timestamp}`)}
-                                            className="text-xs text-primary hover:underline flex items-center gap-1"
-                                          >
-                                            {expandedCells.has(`request-raw-${item.timestamp}`) ? (
-                                              <>
-                                                <ChevronUp className="size-3" />
-                                                收起
-                                              </>
-                                            ) : (
-                                              <>
-                                                <ChevronDown className="size-3" />
-                                                展开
-                                              </>
-                                            )}
-                                          </button>
-                                        )}
-                                      </div>
-                                    )}
-                                  </TableCell>
-                                )}
-                                <TableCell>
-                                  <div className="max-w-xl">
-                                    <div className="text-xs whitespace-pre-wrap break-words relative">
-                                      {renderContentWithCodeBlocks(
-                                        item.responseContent,
-                                        responseContentId,
-                                        expandResponseContent || expandedCells.has(responseContentId),
-                                        responseImages, // Pass extracted images
-                                      )}
-                                    </div>
-                                    {(() => {
-                                      const hasCodeBlock = item.responseContent.includes("```")
-                                      const codeBlockLines = hasCodeBlock
-                                        ? (item.responseContent
-                                            .split("```")
-                                            .filter((_, i) => i % 2 === 1)[0]
-                                            ?.split("\n")?.length ?? 0)
-                                        : 0
-                                      const shouldShowToggle =
-                                        item.responseContent.length > 100 || (hasCodeBlock && codeBlockLines > 3)
-                                      return (
-                                        !expandResponseContent &&
-                                        shouldShowToggle && (
-                                          <button
-                                            onClick={() => toggleCellExpansion(responseContentId)}
-                                            className="text-xs text-primary hover:underline flex items-center gap-1"
-                                          >
-                                            {expandedCells.has(responseContentId) ? (
-                                              <>
-                                                <ChevronUp className="size-3" />
-                                                收起
-                                              </>
-                                            ) : (
-                                              <>
-                                                <ChevronDown className="size-3" />
-                                                展开
-                                              </>
-                                            )}
-                                          </button>
-                                        )
-                                      )
-                                    })()}
-                                  </div>
-                                </TableCell>
-
-                                {showRawColumns && (
-                                  <TableCell className="px-4 py-3 align-top">
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={() => toggleRawVisibility(`response-raw-${item.timestamp}`)}
-                                      className="h-7 text-xs"
-                                    >
-                                      {visibleRawCells.has(`response-raw-${item.timestamp}`) ? "隐藏" : "显示"}
-                                    </Button>
-                                    {visibleRawCells.has(`response-raw-${item.timestamp}`) && (
-                                      <div className="mt-2 space-y-1">
-                                        <pre
-                                          className={`text-xs bg-muted p-2 rounded whitespace-pre-wrap break-words ${
-                                            !expandAllHistory && !expandedCells.has(`response-raw-${item.timestamp}`)
-                                              ? "line-clamp-2"
-                                              : ""
-                                          }`}
-                                        >
-                                          {item.responseRaw}
-                                        </pre>
-                                        {!expandAllHistory && item.responseRaw.length > 100 && (
-                                          <button
-                                            onClick={() => toggleCellExpansion(`response-raw-${item.timestamp}`)}
-                                            className="text-xs text-primary hover:underline flex items-center gap-1"
-                                          >
-                                            {expandedCells.has(`response-raw-${item.timestamp}`) ? (
-                                              <>
-                                                <ChevronUp className="size-3" />
-                                                收起
-                                              </>
-                                            ) : (
-                                              <>
-                                                <ChevronDown className="size-3" />
-                                                展开
-                                              </>
-                                            )}
-                                          </button>
-                                        )}
-                                      </div>
-                                    )}
-                                  </TableCell>
-                                )}
-                                <TableCell className="px-4 py-3 text-center align-top">
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => handleDeleteHistoryItem(item.id)}
-                                    className="h-8 w-8 p-0"
-                                  >
-                                    <Trash2 className="size-4" />
-                                  </Button>
-                                </TableCell>
-                              </TableRow>
-                            )
-                          })}
-                        </TableBody>
-                      </Table>
-                    </div>
-                  </div>
-
-                  {totalPages > 1 && (
-                    <div className="flex items-center justify-center gap-2 mt-4">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                        disabled={currentPage === 1}
-                      >
-                        <ChevronLeft className="size-4" />
-                      </Button>
-                      <span className="text-sm text-muted-foreground">
-                        {currentPage} / {totalPages}
-                      </span>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-                        disabled={currentPage === totalPages}
-                      >
-                        <ChevronRight className="size-4" />
-                      </Button>
-                    </div>
-                  )}
-                </>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Request and Response Details - Side by side */}
-          <div className="grid grid-cols-2 gap-6">
-            <Card className="flex flex-col h-[600px]">
-              <CardHeader className="pb-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <CardTitle>请求详情</CardTitle>
-                    <CardDescription>完整的 cURL 命令（包含明文 API Key）</CardDescription>
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => requestData && handleCopy(requestData, "request")}
-                    disabled={!requestData}
-                  >
-                    <Copy className="h-4 w-4 mr-1" />
-                    {requestCopyText}
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent className="flex-1 overflow-hidden">
-                <div className="h-full overflow-auto rounded-lg bg-muted p-4">
-                  <pre className="text-xs font-mono leading-relaxed whitespace-pre-wrap break-words">
-                    {requestData || '点击"开始测试"查看 cURL 命令...'}
-                  </pre>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card className="flex flex-col h-[600px]">
-              <CardHeader className="pb-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <CardTitle>响应详情</CardTitle>
-                    <CardDescription>API 返回的完整响应</CardDescription>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {responseDuration !== null && (
-                      <div className="text-xs text-muted-foreground font-mono">用时: {responseDuration}ms</div>
-                    )}
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        if (responseData) {
-                          const cleanedResponse = responseData
-                            .split("\n")
-                            .filter((line) => line.trim() !== "")
-                            .join("\n")
-                          handleCopy(cleanedResponse, "response")
-                        }
-                      }}
-                      disabled={!responseData}
-                    >
-                      <Copy className="h-4 w-4 mr-1" />
-                      {responseCopyText}
-                    </Button>
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent className="flex-1 overflow-hidden">
-                <div className="h-full overflow-auto rounded-lg bg-muted p-4">
-                  <pre className="text-xs font-mono leading-relaxed whitespace-pre-wrap break-words">
-                    {responseData
-                      ? responseData
-                          .split("\n")
-                          .filter((line) => line.trim() !== "")
-                          .join("\n")
-                      : "等待响应..."}
-                  </pre>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        </div>
-      </div>
-
-      <Dialog open={!!zoomedImage} onOpenChange={(open) => !open && setZoomedImage(null)}>
-        <DialogContent className="max-w-5xl w-full p-0 overflow-hidden">
-          {zoomedImage && (
-            <div className="relative w-full flex flex-col">
-              <div className="flex-1 flex items-center justify-center bg-black/90 p-4">
-                <img
-                  src={zoomedImage.base64 || zoomedImage.url}
-                  alt={zoomedImage.name || "Zoomed Image"}
-                  className="max-w-full max-h-[80vh] object-contain"
-                />
-              </div>
-              <div className="bg-background border-t p-3 flex items-center justify-between">
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium truncate">{zoomedImage.name || "未命名图片"}</p>
-                  {zoomedImage.type === "url" && zoomedImage.url && (
-                    <p className="text-xs text-muted-foreground truncate">{zoomedImage.url}</p>
-                  )}
-                  {zoomedImage.type === "file" && <p className="text-xs text-muted-foreground">本地上传图片</p>}
-                </div>
-                <Button variant="outline" size="sm" onClick={() => setZoomedImage(null)}>
-                  关闭
-                </Button>
-              </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      <Toaster />
-    </div>
+    <AppShell navbar={navbarNode} modelInfo={modelInfoNode} zoomedImage={zoomedImage} setZoomedImage={setZoomedImage}>
+      <MainDashboard
+        modelHistoryProps={modelHistoryProps}
+        parametersProps={parametersProps}
+        historyChatProps={historyChatProps}
+        requestResponseProps={requestResponseProps}
+      />
+    </AppShell>
   )
 }

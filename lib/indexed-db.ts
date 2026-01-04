@@ -1,29 +1,11 @@
 // IndexedDB utility for storing history with images
+import type { HistoryItem, MessageImage } from "./llm/types"
+
 const DB_NAME = "llm-api-test-db"
 const DB_VERSION = 2 // 升级版本以添加响应图片存储
 const HISTORY_STORE = "history"
 const SETTINGS_STORE = "settings"
 const RESPONSE_IMAGES_STORE = "responseImages" // 存储响应中的图片
-
-interface HistoryItem {
-  id: string
-  timestamp: number
-  duration?: number
-  model: string
-  requestContent: string
-  requestRaw: string
-  responseContent: string
-  responseRaw: string
-}
-
-interface MessageImage {
-  id: string
-  type: "url" | "file"
-  url?: string
-  base64?: string
-  mimeType?: string
-  name?: string
-}
 
 // Initialize IndexedDB
 export const initDB = (): Promise<IDBDatabase> => {
