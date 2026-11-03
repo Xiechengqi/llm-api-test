@@ -8,6 +8,7 @@ import { ApiKeyInput } from "@/components/api-key-input"
 import { CustomProviderToggleButton } from "@/components/custom-provider-editor"
 import { ModelPicker } from "@/components/model-picker"
 import { ProviderSelector } from "@/components/provider-selector"
+import { ShareLinkDialog } from "@/components/share-link-dialog"
 
 type ProviderOption = {
   id: string
@@ -49,6 +50,9 @@ type Props = {
   showApiKey: boolean
   setShowApiKey: (value: boolean) => void
 
+  baseURL: string
+  apiPath: string
+
   handleReset: () => void
 }
 
@@ -75,6 +79,8 @@ export function NavbarControls({
   setApiKey,
   showApiKey,
   setShowApiKey,
+  baseURL,
+  apiPath,
   handleReset,
 }: Props) {
   return (
@@ -111,6 +117,7 @@ export function NavbarControls({
       )}
 
       <ApiKeyInput apiKey={apiKey} setApiKey={setApiKey} showApiKey={showApiKey} setShowApiKey={setShowApiKey} />
+      <ShareLinkDialog baseURL={baseURL} apiPath={apiPath} apiKey={apiKey} model={model} />
       <Button variant="outline" size="sm" onClick={handleReset}>
         <RotateCcw className="mr-2 size-4" />
         重置

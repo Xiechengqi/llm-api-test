@@ -111,9 +111,8 @@ export function Navbar({
   selectedSavedProvider,
 }: Props) {
   return (
-    <nav className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+    <nav className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="flex h-16 items-center gap-4 px-4 md:px-8">
-        {/* CHANGE: Removed "LLM API 测试工具" text, keeping only the icon */}
         <div className="flex items-center gap-2">
           <Zap className="size-6 text-primary" />
           <ProbeStatusIndicator
@@ -148,6 +147,8 @@ export function Navbar({
           setApiKey={setApiKey}
           showApiKey={showApiKey}
           setShowApiKey={setShowApiKey}
+          baseURL={baseURL}
+          apiPath={apiPath}
           handleReset={handleReset}
         />
       </div>

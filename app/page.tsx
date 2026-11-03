@@ -31,6 +31,7 @@ import { preloadHttpTextSource, resolveTextSource } from "@/lib/llm/text-source"
 import { buildHistoryCsv, buildModelHistoryCsv } from "@/lib/llm/csv"
 import { downloadTextFile } from "@/lib/llm/download"
 import { copyTextToClipboard } from "@/lib/llm/clipboard"
+import { parseShareSearch, stripShareSearch } from "@/lib/llm/share-url"
 import { getTotalPages, slicePage } from "@/lib/llm/pagination"
 import { translateEnToZhWithFallback } from "@/lib/llm/translate"
 import type { ProbeStatus, RunState, SettingsState } from "@/lib/llm/page-state"
@@ -460,8 +461,27 @@ export default function LLMAPITester() {
   }, [customProviderStatusMessage])
 
   useEffect(() => {
+    if (!isBootstrapped) return
     saveSettingsToStorage(localStorage, settingsState)
-  }, [settingsState])
+  }, [isBootstrapped, settingsState])
+
+  const shareQueryAppliedRef = useRef(false)
+  useEffect(() => {
+    if (!isBootstrapped || shareQueryAppliedRef.current) return
+    shareQueryAppliedRef.current = true
+    if (typeof window === "undefined") return
+
+    const patch = parseShareSearch(window.location.search)
+    if (!patch) return
+
+    if (Object.keys(patch).length > 0) dispatchSettingsPatch(patch)
+    if (patch.model?.trim()) setIsCustomModel(true)
+
+    const nextUrl = stripShareSearch(window.location.href)
+    if (nextUrl !== window.location.href) {
+      window.history.replaceState(window.history.state, "", nextUrl)
+    }
+  }, [dispatchSettingsPatch, isBootstrapped])
 
   const saveToModelHistory = (status: "idle" | "success" | "error", duration: number | null) => {
     const newItem: ModelHistoryItem = {
