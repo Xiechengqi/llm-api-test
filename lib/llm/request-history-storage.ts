@@ -1,4 +1,5 @@
 import type { HistoryItem } from "@/lib/llm/types"
+import { redactHistoryItem } from "./history-privacy"
 
 export const REQUEST_HISTORY_STORAGE_KEY = "llm_api_history"
 
@@ -22,9 +23,8 @@ export const loadRequestHistoryFromStorage = (storage: Pick<Storage, "getItem">)
         typeof record.responseContent === "string" &&
         typeof record.responseRaw === "string"
       )
-    })
+    }).map((item) => redactHistoryItem(item))
   } catch {
     return []
   }
 }
-

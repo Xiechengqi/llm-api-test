@@ -16,6 +16,7 @@ import {
 import { loadResponseImagesForHistory } from "@/lib/llm/history-response-images"
 
 type Props = {
+  enabled?: boolean
   dispatchSettingsPatch: (patch: Partial<SettingsState>) => void
   setMessageImages: (images: MessageImage[]) => void
   setHistory: (history: HistoryItem[]) => void
@@ -24,39 +25,38 @@ type Props = {
 }
 
 export function useAppDataBootstrap({
+  enabled = true,
   dispatchSettingsPatch,
   setMessageImages,
   setHistory,
   setResponseImagesMap,
   setModelHistory,
 }: Props) {
-  const [isBootstrapped, setIsBootstrapped] = useState(false)
+  const [status, setStatus] = useState<"loading" | "ready" | "unavailable">("loading")
 
   useEffect(() => {
-    const initializeDB = async () => {
-      try {
-        await initDB()
-        await migrateFromLocalStorage()
-        console.log("[v0] IndexedDB initialized")
-      } catch (error) {
-        console.error("[v0] Failed to initialize IndexedDB:", error)
-      }
-    }
-    initializeDB()
-  }, [])
-
-  useEffect(() => {
+    if (!enabled) return
+    let cancelled = false
     const loadData = async () => {
       try {
-        console.log("[v0] Loading data from storage...")
-
+        // localStorage can still be readable when IndexedDB is unavailable.
+        // Restore it first, but do not enable any automatic writes until the
+        // complete bootstrap succeeds (otherwise empty state could erase data).
         const settingsPatch = loadSettingsFromStorage(localStorage)
-        if (Object.keys(settingsPatch).length > 0) {
-          dispatchSettingsPatch(settingsPatch)
-        }
+        if (Object.keys(settingsPatch).length > 0) dispatchSettingsPatch(settingsPatch)
+        const loadedModelHistory = loadModelHistoryFromStorage(localStorage)
+        if (loadedModelHistory.length > 0) setModelHistory(loadedModelHistory)
+
+        const db = await initDB()
+        db.close()
+        if (cancelled) return
+        await migrateFromLocalStorage()
+        if (cancelled) return
+        console.log("[v0] Loading data from storage...")
 
         console.log("[v0] Loading images from IndexedDB...")
         const imagesFromDB = await loadImagesFromDB()
+        if (cancelled) return
         console.log("[v0] Loaded images from IndexedDB:", imagesFromDB.length, "images")
         if (imagesFromDB.length > 0) {
           setMessageImages(imagesFromDB)
@@ -65,11 +65,13 @@ export function useAppDataBootstrap({
 
         console.log("[v0] Loading history from IndexedDB...")
         const historyFromDB = await loadHistoryFromDB()
+        if (cancelled) return
         if (historyFromDB.length > 0) {
           console.log("[v0] Loaded history from IndexedDB:", historyFromDB.length, "entries")
           setHistory(historyFromDB)
           loadResponseImagesForHistory(historyFromDB)
             .then((imagesMap) => {
+              if (cancelled) return
               setResponseImagesMap(imagesMap)
               console.log("[v0] Loaded response images for", imagesMap.size, "history items")
             })
@@ -81,22 +83,21 @@ export function useAppDataBootstrap({
           if (legacyHistory.length > 0) {
             setHistory(legacyHistory)
             await saveHistoryToDB(legacyHistory)
+            if (cancelled) return
           }
         }
 
-        const loadedModelHistory = loadModelHistoryFromStorage(localStorage)
-        if (loadedModelHistory.length > 0) {
-          setModelHistory(loadedModelHistory)
-        }
+        if (!cancelled) setStatus("ready")
       } catch (error) {
         console.error("[v0] Error loading data:", error)
-      } finally {
-        setIsBootstrapped(true)
+        if (!cancelled) setStatus("unavailable")
       }
     }
 
     loadData()
+    return () => { cancelled = true }
   }, [
+    enabled,
     dispatchSettingsPatch,
     setHistory,
     setMessageImages,
@@ -104,5 +105,8 @@ export function useAppDataBootstrap({
     setResponseImagesMap,
   ])
 
-  return isBootstrapped
+  return {
+    canPersist: enabled && status === "ready",
+    storageUnavailable: enabled && status === "unavailable",
+  }
 }

@@ -153,9 +153,10 @@ export type ReadTextFromHandleKeyResult =
 export const readTextFromHandleKey = async (
   handleKey: string,
   existingHandle: FileSystemFileHandle | null,
+  options: { persistent?: boolean } = {},
 ): Promise<ReadTextFromHandleKeyResult> => {
   let handle = existingHandle
-  if (!handle) {
+  if (!handle && options.persistent !== false) {
     handle = await getFileHandle(handleKey)
   }
 
@@ -174,7 +175,7 @@ export const readTextFromHandleKey = async (
     return { ok: true, content, handle }
   } catch (error) {
     console.log("[v0] Failed to read from file handle key:", handleKey, error)
-    await deleteFileHandle(handleKey)
+    if (options.persistent !== false) await deleteFileHandle(handleKey)
     return { ok: false, reason: "read_failed", handle: null }
   }
 }

@@ -13,6 +13,7 @@ type ToastFn = (options: {
 }) => void
 
 type Props = {
+  persistent?: boolean
   history: HistoryItem[]
   setHistory: (items: HistoryItem[]) => void
   setResponseImagesMap: (updater: (prev: Map<number, string[]>) => Map<number, string[]>) => void
@@ -21,6 +22,7 @@ type Props = {
 }
 
 export function useHistoryActions({
+  persistent = true,
   history,
   setHistory,
   setResponseImagesMap,
@@ -34,9 +36,11 @@ export function useHistoryActions({
       setHistory(updated)
 
       if (itemToDelete) {
-        deleteResponseImagesFromDB(itemToDelete.timestamp).catch((error) => {
-          console.error("[v0] Failed to delete response images:", error)
-        })
+        if (persistent) {
+          deleteResponseImagesFromDB(itemToDelete.timestamp).catch((error) => {
+            console.error("[v0] Failed to delete response images:", error)
+          })
+        }
         setResponseImagesMap((prev) => {
           const next = new Map(prev)
           next.delete(itemToDelete.timestamp)
@@ -49,11 +53,11 @@ export function useHistoryActions({
         description: "历史记录项已被删除",
       })
     },
-    [history, setHistory, setResponseImagesMap, toast],
+    [history, persistent, setHistory, setResponseImagesMap, toast],
   )
 
   const clearHistory = useCallback(() => {
-    clearAllData()
+    (persistent ? clearAllData() : Promise.resolve())
       .then(() => {
         setHistory([])
         setResponseImagesMap(() => new Map())
@@ -71,8 +75,7 @@ export function useHistoryActions({
           description: "清空历史记录失败",
         })
       })
-  }, [setCurrentPage, setHistory, setResponseImagesMap, toast])
+  }, [persistent, setCurrentPage, setHistory, setResponseImagesMap, toast])
 
   return { clearHistory, deleteHistoryItem }
 }
-

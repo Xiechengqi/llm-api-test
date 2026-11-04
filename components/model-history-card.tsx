@@ -96,12 +96,13 @@ export function ModelHistoryCard({
                       <TableCell className="text-sm font-mono">
                         <div className="flex items-center gap-2">
                           <span className="flex-1">
-                            {visibleApiKeys.has(item.id) ? item.apiKey : `${item.apiKey.substring(0, 10)}...`}
+                            {!item.apiKey ? "未保存" : visibleApiKeys.has(item.id) ? item.apiKey : `${item.apiKey.substring(0, 10)}...`}
                           </span>
                           <Button
                             variant="ghost"
                             size="sm"
                             onClick={() => toggleApiKeyVisibility(item.id)}
+                            disabled={!item.apiKey}
                             className="h-6 w-6 p-0"
                             title={visibleApiKeys.has(item.id) ? "隐藏 API Key" : "显示 API Key"}
                           >
@@ -133,7 +134,7 @@ export function ModelHistoryCard({
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2">
-                          <Button variant="outline" size="sm" onClick={() => runHistoryProbeTest(item)} title="探针测试">
+                          <Button variant="outline" size="sm" onClick={() => runHistoryProbeTest(item)} disabled={!item.apiKey} title={item.apiKey ? "探针测试" : "请先应用配置并填写 API Key"}>
                             <Activity className="size-4" />
                           </Button>
                           <Button variant="default" size="sm" onClick={() => applyHistoryItem(item)}>
@@ -189,4 +190,3 @@ export function ModelHistoryCard({
     </Card>
   )
 }
-

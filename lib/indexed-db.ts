@@ -1,5 +1,6 @@
 // IndexedDB utility for storing history with images
 import type { HistoryItem, MessageImage } from "./llm/types"
+import { redactHistoryItem } from "./llm/history-privacy"
 
 const DB_NAME = "llm-api-test-db"
 const DB_VERSION = 2 // 升级版本以添加响应图片存储
@@ -54,7 +55,7 @@ export const saveHistoryToDB = async (history: HistoryItem[]): Promise<void> => 
   // Add all history items
   for (const item of history) {
     await new Promise<void>((resolve, reject) => {
-      const addRequest = store.add(item)
+      const addRequest = store.add(redactHistoryItem(item))
       addRequest.onsuccess = () => resolve()
       addRequest.onerror = () => reject(addRequest.error)
     })
@@ -75,7 +76,7 @@ export const loadHistoryFromDB = async (): Promise<HistoryItem[]> => {
       const history = request.result as HistoryItem[]
       // Sort by timestamp descending (newest first)
       history.sort((a, b) => b.timestamp - a.timestamp)
-      resolve(history)
+      resolve(history.map((item) => redactHistoryItem(item)))
       db.close()
     }
     request.onerror = () => {

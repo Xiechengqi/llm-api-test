@@ -1,4 +1,5 @@
 import type { HistoryItem, ModelHistoryItem } from "./types"
+import { redactHistoryItem } from "./history-privacy"
 
 export const escapeCsvField = (value: unknown) => {
   if (value === null || value === undefined) return '""'
@@ -10,7 +11,8 @@ export const buildHistoryCsv = (args: { history: HistoryItem[]; showRawColumns: 
     ? ["时间", "模型", "用时(ms)", "请求 Content", "请求 Raw", "响应 Content", "响应 Raw"]
     : ["时间", "模型", "用时(ms)", "请求 Content", "响应 Content"]
 
-  const rows = args.history.map((item) => {
+  const rows = args.history.map((original) => {
+    const item = redactHistoryItem(original)
     const timestamp = new Date(item.timestamp).toLocaleString("zh-CN", {
       year: "numeric",
       month: "2-digit",

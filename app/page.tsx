@@ -31,7 +31,8 @@ import { preloadHttpTextSource, resolveTextSource } from "@/lib/llm/text-source"
 import { buildHistoryCsv, buildModelHistoryCsv } from "@/lib/llm/csv"
 import { downloadTextFile } from "@/lib/llm/download"
 import { copyTextToClipboard } from "@/lib/llm/clipboard"
-import { parseShareSearch, stripShareSearch } from "@/lib/llm/share-url"
+import { captureShareLaunch, settingsForShareLaunch, type ShareLaunch } from "@/lib/llm/share-url"
+import { redactHistoryItem } from "@/lib/llm/history-privacy"
 import { getTotalPages, slicePage } from "@/lib/llm/pagination"
 import { translateEnToZhWithFallback } from "@/lib/llm/translate"
 import type { ProbeStatus, RunState, SettingsState } from "@/lib/llm/page-state"
@@ -55,12 +56,23 @@ import type {
   OpenRouterModel,
 } from "@/lib/llm/types"
 
-import {
-  saveResponseImagesToDB,
-  loadResponseImagesFromDB,
-} from "@/lib/indexed-db"
+import { saveResponseImagesToDB } from "@/lib/indexed-db"
 
 export default function LLMAPITester() {
+  const captured = useRef<ShareLaunch | null>(null)
+  const [launch, setLaunch] = useState<ShareLaunch | null>(null)
+  useEffect(() => {
+    // Capture and scrub before mounting any storage/bootstrap effects. Keep the
+    // result across StrictMode's effect replay after the URL has been cleaned.
+    captured.current ??= captureShareLaunch(window)
+    setLaunch(captured.current)
+  }, [])
+  if (!launch) return <div role="status" className="p-6 text-sm text-muted-foreground">正在准备测试工具…</div>
+  return <LLMAPITesterSession launch={launch} />
+}
+
+function LLMAPITesterSession({ launch }: { launch: ShareLaunch }) {
+  const isTemporarySession = launch.mode === "temporary"
   const DEFAULT_VALUES = {
     provider: "openrouter",
     model: "",
@@ -132,7 +144,7 @@ export default function LLMAPITester() {
     isAddingImageUrl: false,
   }
 
-  const [settingsState, dispatchSettings] = useReducer(settingsReducer, initialSettings)
+  const [settingsState, dispatchSettings] = useReducer(settingsReducer, settingsForShareLaunch(initialSettings, launch))
   const setSetting = <K extends keyof SettingsState>(key: K, value: SettingsState[K]) => {
     dispatchSettings({ type: "set", key, value })
   }
@@ -175,7 +187,7 @@ export default function LLMAPITester() {
   const [cerebrasModels, setCerebrasModels] = useState<CerebrasModel[]>([])
   const [modelscopeModels, setModelscopeModels] = useState<ModelScopeModel[]>([])
   const [isLoadingModels, setIsLoadingModels] = useState(false)
-  const [isCustomModel, setIsCustomModel] = useState(false)
+  const [isCustomModel, setIsCustomModel] = useState(launch.mode === "temporary" && !!launch.patch.model?.trim())
   const selectedInputModalities = settingsState.selectedInputModalities
   const setSelectedInputModalities = (value: string[]) => setSetting("selectedInputModalities", value)
 
@@ -337,6 +349,7 @@ export default function LLMAPITester() {
   const [visibleApiKeys, setVisibleApiKeys] = useState<Set<string>>(new Set())
 
   const [savedProviders, setSavedProviders] = useState<CustomProviderConfig[]>([])
+  const [providersLoaded, setProvidersLoaded] = useState(false)
   const [customProviderName, setCustomProviderName] = useState("")
   const [customProviderError, setCustomProviderError] = useState("")
   const [customProviderSaved, setCustomProviderSaved] = useState(false)
@@ -348,17 +361,19 @@ export default function LLMAPITester() {
 
   const { toast } = useToast()
 
-  const isBootstrapped = useAppDataBootstrap({
+  const { canPersist, storageUnavailable } = useAppDataBootstrap({
+    enabled: !isTemporarySession,
     dispatchSettingsPatch,
     setMessageImages,
     setHistory,
     setResponseImagesMap,
     setModelHistory,
   })
-  usePersistHistoryToDB(history, { enabled: isBootstrapped })
-  usePersistImagesToDB(messageImages, { enabled: isBootstrapped })
+  usePersistHistoryToDB(history, { enabled: canPersist })
+  usePersistImagesToDB(messageImages, { enabled: canPersist })
   const { clearHistory: handleClearHistory, deleteHistoryItem: handleDeleteHistoryItem } =
     useHistoryActions({
+      persistent: !isTemporarySession,
       history,
       setHistory,
       setResponseImagesMap,
@@ -428,17 +443,21 @@ export default function LLMAPITester() {
   }, [provider, selectedModelInfoForPath, unifiedEndpoint, apiPath])
 
   useEffect(() => {
-    if (typeof window === "undefined") return
-    const providers = loadCustomProvidersFromStorage(localStorage)
-    if (providers.length > 0) {
-      setSavedProviders(providers)
+    if (isTemporarySession || typeof window === "undefined") return
+    try {
+      const providers = loadCustomProvidersFromStorage(localStorage)
+      if (providers.length > 0) setSavedProviders(providers)
+      setProvidersLoaded(true)
+    } catch {
+      // Do not overwrite unreadable browser data with the initial empty list.
+      setProvidersLoaded(false)
     }
-  }, [])
+  }, [isTemporarySession])
 
   useEffect(() => {
-    if (typeof window === "undefined") return
+    if (isTemporarySession || !providersLoaded || typeof window === "undefined") return
     saveCustomProvidersToStorage(localStorage, savedProviders)
-  }, [savedProviders])
+  }, [isTemporarySession, providersLoaded, savedProviders])
 
   useEffect(() => {
     if (provider === "custom") return
@@ -461,27 +480,9 @@ export default function LLMAPITester() {
   }, [customProviderStatusMessage])
 
   useEffect(() => {
-    if (!isBootstrapped) return
+    if (!canPersist) return
     saveSettingsToStorage(localStorage, settingsState)
-  }, [isBootstrapped, settingsState])
-
-  const shareQueryAppliedRef = useRef(false)
-  useEffect(() => {
-    if (!isBootstrapped || shareQueryAppliedRef.current) return
-    shareQueryAppliedRef.current = true
-    if (typeof window === "undefined") return
-
-    const patch = parseShareSearch(window.location.search)
-    if (!patch) return
-
-    if (Object.keys(patch).length > 0) dispatchSettingsPatch(patch)
-    if (patch.model?.trim()) setIsCustomModel(true)
-
-    const nextUrl = stripShareSearch(window.location.href)
-    if (nextUrl !== window.location.href) {
-      window.history.replaceState(window.history.state, "", nextUrl)
-    }
-  }, [dispatchSettingsPatch, isBootstrapped])
+  }, [canPersist, settingsState])
 
   const saveToModelHistory = (status: "idle" | "success" | "error", duration: number | null) => {
     const newItem: ModelHistoryItem = {
@@ -537,7 +538,7 @@ export default function LLMAPITester() {
 
       if (type === "prompt") {
         promptFileHandleRef.current = handle
-        if (handle) {
+        if (handle && !isTemporarySession) {
           const saved = await saveFileHandle("promptFileHandle", handle)
           console.log("[v0] Prompt file handle save result:", saved)
         }
@@ -552,7 +553,7 @@ export default function LLMAPITester() {
       }
 
       systemPromptFileHandleRef.current = handle
-      if (handle) {
+      if (handle && !isTemporarySession) {
         const saved = await saveFileHandle("systemPromptFileHandle", handle)
         console.log("[v0] System prompt file handle save result:", saved)
       }
@@ -578,7 +579,7 @@ export default function LLMAPITester() {
     console.log(`[v0] reloadLocalFile called for ${type}`)
     console.log(`[v0] Current ref handle:`, fileHandleRef.current ? "exists" : "null")
 
-    const result = await readTextFromHandleKey(handleKey, fileHandleRef.current)
+    const result = await readTextFromHandleKey(handleKey, fileHandleRef.current, { persistent: !isTemporarySession })
     if (result.ok) {
       fileHandleRef.current = result.handle
       setContent(result.content)
@@ -614,9 +615,9 @@ export default function LLMAPITester() {
       setLoadedPromptContent("")
       setIsPromptFromLocalFile(false)
       promptFileHandleRef.current = null
-      deleteFileHandle("promptFileHandle")
+      if (!isTemporarySession) deleteFileHandle("promptFileHandle")
     }
-  }, [enablePromptFile, promptFilePath, isPromptFromLocalFile])
+  }, [enablePromptFile, promptFilePath, isPromptFromLocalFile, isTemporarySession])
 
   useEffect(() => {
     preloadHttpTextSource({
@@ -632,9 +633,9 @@ export default function LLMAPITester() {
       setLoadedSystemPromptContent("")
       setIsSystemPromptFromLocalFile(false)
       systemPromptFileHandleRef.current = null
-      deleteFileHandle("systemPromptFileHandle")
+      if (!isTemporarySession) deleteFileHandle("systemPromptFileHandle")
     }
-  }, [enableSystemPromptFile, systemPromptFilePath, isSystemPromptFromLocalFile])
+  }, [enableSystemPromptFile, systemPromptFilePath, isSystemPromptFromLocalFile, isTemporarySession])
 
   const handleReloadImages = async (): Promise<MessageImage[]> => {
     if (messageImages.length === 0) return messageImages
@@ -764,18 +765,12 @@ export default function LLMAPITester() {
     }
   }
 
-  // CHANGE: Increased delay from 500ms to 5000ms (5 seconds) to prevent rapid probe firing when quickly changing settings
+  // Opening a link or editing configuration must never trigger a paid call.
+  // Both the probe and the main test require an explicit user action.
   useEffect(() => {
-    if (apiKey && model && fullApiPath) {
-      // 5 second delay to avoid triggering probe on rapid configuration changes
-      const timer = setTimeout(() => {
-        runProbeTest()
-      }, 5000)
-      return () => clearTimeout(timer)
-    } else {
-      setProbeStatus("idle") // Reset status if any condition is not met
-    }
-  }, [apiKey, model, fullApiPath]) // Dependencies for the effect
+    setProbeStatus("idle")
+    setProbeDuration(null)
+  }, [apiKey, model, fullApiPath])
 
   const handleProviderChange = (providerId: string) => {
     setProvider(providerId)
@@ -870,10 +865,10 @@ export default function LLMAPITester() {
     setSavedProviders((prev) => [...prev, newProvider])
     setProvider(newProvider.id)
     setCustomProviderSaved(true)
-    setCustomProviderStatusMessage("保存成功")
+    setCustomProviderStatusMessage(isTemporarySession ? "已临时添加，仅此标签页有效" : "保存成功")
     setIsEditingCustomProvider(false)
     toast({
-      title: "已保存自定义提供商",
+      title: isTemporarySession ? "已临时添加提供商" : "已保存自定义提供商",
       description: `${trimmedName} 已添加到提供商列表`,
     })
   }
@@ -1108,7 +1103,7 @@ export default function LLMAPITester() {
       const { responseContent, responseImagesToSave } = parseResponseToContent(parsedResponse)
 
       const historyTimestamp = Date.now()
-      const historyItem: HistoryItem = {
+      const historyItem: HistoryItem = redactHistoryItem({
         id: historyTimestamp.toString(),
         timestamp: historyTimestamp,
         model: modelToUse, // Use the actual model used
@@ -1117,12 +1112,15 @@ export default function LLMAPITester() {
         responseContent,
         responseRaw: formattedResponse,
         duration: duration, // Store response time
-      }
+      }, [apiKey])
 
       // 保存响应图片到 IndexedDB（如果存在）
       if (responseImagesToSave.length > 0) {
-        saveResponseImagesToDB(historyTimestamp, responseImagesToSave)
-          .then(() => {
+        if (isTemporarySession) {
+          const images = responseImagesToSave.map((img) => img.base64 || img.url || "").filter(Boolean)
+          setResponseImagesMap((prev) => new Map(prev).set(historyTimestamp, images))
+        } else {
+          saveResponseImagesToDB(historyTimestamp, responseImagesToSave).then(() => {
             // 更新状态中的图片映射
             const base64Images = responseImagesToSave.map((img) => img.base64 || img.url || "").filter(Boolean)
             if (base64Images.length > 0) {
@@ -1136,6 +1134,7 @@ export default function LLMAPITester() {
           .catch((error) => {
             console.error("[v0] Failed to save response images to IndexedDB:", error)
           })
+        }
       }
 
       setHistory((prev) => {
@@ -1189,7 +1188,7 @@ export default function LLMAPITester() {
       setResponseData(errorResponse)
       setResponseDuration(null) // Reset duration on error
 
-      const newHistoryItem: HistoryItem = {
+      const newHistoryItem: HistoryItem = redactHistoryItem({
         id: Date.now().toString(),
         timestamp: Date.now(),
         model: modelToUse, // Add model to history item
@@ -1197,7 +1196,7 @@ export default function LLMAPITester() {
         requestRaw: "",
         responseContent: "",
         responseRaw: errorResponse,
-      }
+      }, [apiKey])
       setHistory((prev) => {
         const updated = [newHistoryItem, ...prev]
         return updated
@@ -1301,13 +1300,15 @@ export default function LLMAPITester() {
     setLoadedSystemPromptContent("")
     promptFileHandleRef.current = null
     systemPromptFileHandleRef.current = null
-    deleteFileHandle("promptFileHandle")
-    deleteFileHandle("systemPromptFileHandle")
+    if (!isTemporarySession) {
+      deleteFileHandle("promptFileHandle")
+      deleteFileHandle("systemPromptFileHandle")
+    }
 
     setMessageImages([])
     setZoomedImage(null)
 
-    localStorage.removeItem(SETTINGS_STORAGE_KEY)
+    if (!isTemporarySession) localStorage.removeItem(SETTINGS_STORAGE_KEY)
   }
 
   const handleReset = () => {
@@ -1326,8 +1327,10 @@ export default function LLMAPITester() {
     setLoadedSystemPromptContent("")
     promptFileHandleRef.current = null
     systemPromptFileHandleRef.current = null
-    deleteFileHandle("promptFileHandle")
-    deleteFileHandle("systemPromptFileHandle")
+    if (!isTemporarySession) {
+      deleteFileHandle("promptFileHandle")
+      deleteFileHandle("systemPromptFileHandle")
+    }
 
     setMessageImages([])
     setZoomedImage(null)
@@ -1338,7 +1341,7 @@ export default function LLMAPITester() {
     setCustomProviderStatusMessage("")
     setIsEditingCustomProvider(false)
 
-    localStorage.removeItem(SETTINGS_STORAGE_KEY)
+    if (!isTemporarySession) localStorage.removeItem(SETTINGS_STORAGE_KEY)
   }
 
   const deleteModelHistoryItem = (id: string) => {
@@ -1532,7 +1535,7 @@ export default function LLMAPITester() {
 
     toast({
       title: "配置已应用",
-      description: `已应用 ${item.provider} - ${item.model} 的配置`,
+      description: item.apiKey ? `已应用 ${item.provider} - ${item.model} 的配置` : "已应用配置，请填写 API Key 后测试",
       className: "bg-blue-50 border-blue-200",
       duration: 2000,
     })
@@ -1540,15 +1543,14 @@ export default function LLMAPITester() {
 
   // 自动保存 modelHistory 到 localStorage
   useEffect(() => {
-    if (typeof window === "undefined") return
-    if (modelHistory.length === 0) return
+    if (!canPersist || typeof window === "undefined") return
     saveModelHistoryToStorage(localStorage, modelHistory)
-  }, [modelHistory])
+  }, [canPersist, modelHistory])
 
   const clearModelHistory = () => {
     setModelHistory([])
     setModelHistoryPage(1)
-    clearModelHistoryFromStorage(localStorage)
+    if (!isTemporarySession) clearModelHistoryFromStorage(localStorage)
     toast({
       title: "历史记录已清空",
       duration: 2000,
@@ -2006,6 +2008,13 @@ export default function LLMAPITester() {
 
   return (
     <AppShell navbar={navbarNode} modelInfo={modelInfoNode} zoomedImage={zoomedImage} setZoomedImage={setZoomedImage}>
+      {launch.mode === "temporary" ? (
+        <p role={launch.invalid ? "alert" : "status"} className="border-b px-4 py-2 text-sm text-muted-foreground md:px-8">
+          {launch.invalid ? "分享链接无效，请重新打开或手动填写配置。" : "临时测试：配置仅在此标签页使用，不自动保存。"}
+          {" 点击探针或开始测试后才会调用模型，正常计费。"}
+        </p>
+      ) : null}
+      {storageUnavailable ? <p role="status" className="border-b px-4 py-2 text-sm text-muted-foreground md:px-8">浏览器存储不可用，自动保存已暂停，原有数据不会被空配置覆盖。</p> : null}
       <MainDashboard
         modelHistoryProps={modelHistoryProps}
         parametersProps={parametersProps}

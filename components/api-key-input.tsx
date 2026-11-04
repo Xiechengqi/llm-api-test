@@ -17,6 +17,9 @@ export function ApiKeyInput({ apiKey, setApiKey, showApiKey, setShowApiKey }: Pr
       <Input
         type={showApiKey ? "text" : "password"}
         value={apiKey}
+        autoComplete="off"
+        autoCapitalize="none"
+        spellCheck={false}
         onChange={(e) => setApiKey(e.target.value)}
         placeholder="API Key"
         className="w-[200px] pr-10"
@@ -33,4 +36,3 @@ export function ApiKeyInput({ apiKey, setApiKey, showApiKey, setShowApiKey }: Pr
     </div>
   )
 }
-

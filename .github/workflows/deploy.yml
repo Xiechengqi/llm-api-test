@@ -31,7 +31,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build
-        run: pnpm build
+        run: pnpm typecheck && pnpm test && pnpm build
 
       - name: CNAME
         run: echo 'llm-api-test.xiecq.top' > out/CNAME

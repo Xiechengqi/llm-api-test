@@ -61,7 +61,7 @@ export function ShareLinkDialog({ baseURL, apiPath, apiKey, model }: Props) {
           <DialogHeader>
             <DialogTitle>分享配置</DialogTitle>
             <DialogDescription>
-              链接包含 API Key。对方打开后会填进导航栏，也会进入浏览器历史。
+              链接包含 API Key，请仅发给可信任的人。对方打开后临时使用配置，不自动保存或发起模型调用。
             </DialogDescription>
           </DialogHeader>
           <Textarea readOnly value={shareUrl} className="min-h-24 font-mono text-xs" onFocus={(event) => event.currentTarget.select()} />
